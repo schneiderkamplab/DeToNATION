@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "detonation"
-version = "0.0.0"
+version = "0.0.1"
 authors = [
   { name = "Peter Schneider-Kamp" }
 ]
@@ -18,7 +18,11 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 
-dependencies = []
+dependencies = [
+    'einops',
+    'numpy',
+    'torch',
+]
 
 [project.urls]
 "Homepage" = "https://github.com/schneiderkamplab/DeToNATION"
