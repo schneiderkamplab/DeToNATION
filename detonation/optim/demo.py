@@ -51,6 +51,7 @@ class DeMoReplicator(Replicator):
         self,
         sharded_grad: torch.Tensor,
         replication_parallel_group: dist.ProcessGroup,
+        param: torch.nn.Parameter,
         param_state_dict: dict,
         param_group: Dict[str, Any],
     ) -> torch.Tensor:
@@ -73,7 +74,7 @@ class DeMoReplicator(Replicator):
 
         # Estimate transmitted delta
         transmit_grad = self.transform.decode(
-            self.compress.decompress(sparse_idx, sparse_val, xshape, sharded_grad.device, sharded_grad.dtype)
+            self.compress.decompress(sparse_idx, sparse_val, xshape, param.device, param.dtype)
         )
 
         # Remove transmitted from delta
@@ -94,7 +95,7 @@ class DeMoReplicator(Replicator):
 
         # Decode new gradient from all nodes
         new_grad = self.transform.decode(
-            self.compress.batch_decompress(sparse_idx_gather, sparse_val_gather, xshape, sharded_grad.device, sharded_grad.dtype)
+            self.compress.batch_decompress(sparse_idx_gather, sparse_val_gather, xshape, param.device, param.dtype)
         )
         return new_grad
 

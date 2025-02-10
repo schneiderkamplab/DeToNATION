@@ -43,6 +43,7 @@ class Replicator(ABC):
     def replicate(
         sharded_grad: torch.Tensor,
         replication_parallel_group: dist.ProcessGroup,
+        param: torch.nn.Parameter,
         param_state_dict: dict,
         param_group: Dict[str, Any],
     ):
@@ -71,6 +72,7 @@ class FullReplicator(Replicator):
     def replicate(
         sharded_grad: torch.Tensor,
         replication_parallel_group: dist.ProcessGroup,
+        param: torch.nn.Parameter,
         param_state_dict: dict,
         param_group: Dict[str, Any],
     ) -> torch.Tensor:
@@ -88,6 +90,7 @@ class NoReplicator(Replicator):
     def replicate(
         sharded_grad: torch.Tensor,
         replication_parallel_group: dist.ProcessGroup,
+        param: torch.nn.Parameter,
         param_state_dict: dict,
         param_group: Dict[str, Any],
     ) -> torch.Tensor:
