@@ -10,17 +10,16 @@ In an exisiting codebase that uses PyTorch and one of these sharding strategies,
 `torch.distributed.DistributedDataParallel.no_sync` to disable external gradient synchronization.
 See https://pytorch.org/docs/stable/generated/torch.nn.parallel.DistributedDataParallel.html#torch.nn.parallel.DistributedDataParallel.no_sync
 TODO:
-* grab replication_parallel_group at init time
 * make sharding strategy a parameter
 * automatically detect sharding strategy from model
 * automatically detect sharding and replication groups from torch.dist or model
-* refactor Replicator and Full/No to own file
 """
 
 from abc import ABC, abstractmethod
 import torch
-import torch.fft
 import torch.distributed as dist
+import torch.fft
+import torch.nn.functional as F
 from typing import Any, Callable, Dict, Optional
 
 __all__ = ["DeToNATION", "FullReplicator", "NoReplicator", "Replicator"]
@@ -43,7 +42,6 @@ class Replicator(ABC):
     def replicate(
         self,
         sharded_grad: torch.Tensor,
-        replication_parallel_group: dist.ProcessGroup,
         param: torch.nn.Parameter,
         param_state_dict: dict,
         param_group: Dict[str, Any],
@@ -65,7 +63,7 @@ class Replicator(ABC):
 class FullReplicator(Replicator):
 
     def init(self, optim: torch.optim.Optimizer):
-        pass
+        self.replication_parallel_group = optim.replication_parallel_group
 
     def step(self):
         pass
@@ -73,12 +71,11 @@ class FullReplicator(Replicator):
     def replicate(
         self,
         sharded_grad: torch.Tensor,
-        replication_parallel_group: dist.ProcessGroup,
         param: torch.nn.Parameter,
         param_state_dict: dict,
         param_group: Dict[str, Any],
     ) -> torch.Tensor:
-        dist.all_reduce(sharded_grad, dist.ReduceOp.AVG, group=replication_parallel_group)
+        dist.all_reduce(sharded_grad, dist.ReduceOp.AVG, group=self.replication_parallel_group)
         return sharded_grad.to(param.device).to(param.dtype)
 
 class NoReplicator(Replicator):
@@ -92,7 +89,6 @@ class NoReplicator(Replicator):
     def replicate(
         self,
         sharded_grad: torch.Tensor,
-        replication_parallel_group: dist.ProcessGroup,
         param: torch.nn.Parameter,
         param_state_dict: dict,
         param_group: Dict[str, Any],
@@ -181,7 +177,6 @@ class DeToNATION(torch.optim.SGD):
                 # Replicating the gradient if needed
                 new_grad = self.replicator.replicate(
                     sharded_grad=sharded_grad,
-                    replication_parallel_group=self.replication_parallel_group,
                     param=param,
                     param_state_dict=self.state[param],
                     param_group=group,

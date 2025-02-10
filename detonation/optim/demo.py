@@ -41,6 +41,7 @@ class DeMoReplicator(Replicator):
                 if p.requires_grad:
                     optim.state[p]["demo_delta"] = torch.zeros_like(p)
         self.transform = TransformDCT(optim.param_groups, self.compression_chunk)
+        self.replication_parallel_group = optim.replication_parallel_group
         self._replication_world_size = optim.replication_parallel_group.size()
 
     def step(self):
@@ -50,7 +51,6 @@ class DeMoReplicator(Replicator):
     def replicate(
         self,
         sharded_grad: torch.Tensor,
-        replication_parallel_group: dist.ProcessGroup,
         param: torch.nn.Parameter,
         param_state_dict: dict,
         param_group: Dict[str, Any],
@@ -83,8 +83,8 @@ class DeMoReplicator(Replicator):
         # Prepare and gather the indices and values
         sparse_idx_gather = [torch.zeros_like(sparse_idx) for _ in range(self._replication_world_size)]
         sparse_val_gather = [torch.zeros_like(sparse_val) for _ in range(self._replication_world_size)]
-        sparse_idx_handle = dist.all_gather(sparse_idx_gather, sparse_idx, group=replication_parallel_group, async_op=True)
-        sparse_val_handle = dist.all_gather(sparse_val_gather, sparse_val, group=replication_parallel_group, async_op=True)
+        sparse_idx_handle = dist.all_gather(sparse_idx_gather, sparse_idx, group=self.replication_parallel_group, async_op=True)
+        sparse_val_handle = dist.all_gather(sparse_val_gather, sparse_val, group=self.replication_parallel_group, async_op=True)
         sparse_idx_handle.wait()
         sparse_val_handle.wait()
 
