@@ -162,31 +162,32 @@ class DeToNATION(torch.optim.SGD):
 
         for group in self.param_groups:
             lr = group["lr"]
-            for p in group["params"]:
-                if not p.requires_grad:
+            for param in group["params"]:
+                if not param.requires_grad:
                     continue
 
                 # Sharding gradient if needed
-                unsharded_grad = p.grad.data
-                p.grad = None
+                unsharded_grad = param.grad.data
+                param.grad = None
                 sharded_grad = self._grad_reduce_scatter(unsharded_grad)
 
                 # Step-Weight decay
                 if self.weight_decay != 0.0:
-                    p.data.mul_(1.0 - lr * self.weight_decay)
+                    param.data.mul_(1.0 - lr * self.weight_decay)
 
                 # Replicating the gradient if needed
                 new_grad = self.replicator.replicate(
                     sharded_grad=sharded_grad,
                     replication_parallel_group=self.replication_parallel_group,
-                    param_state_dict=self.state[p],
+                    param=param,
+                    param_state_dict=self.state[param],
                     param_group=group,
                 )
-                p.grad = new_grad
+                param.grad = new_grad
 
                 # Sign-SGD
                 if self.sign:
-                    p.grad.sign_()
+                    param.grad.sign_()
 
         # SGD step
         return super().step(closure)
