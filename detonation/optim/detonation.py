@@ -97,7 +97,7 @@ class NoReplicator(Replicator):
         param_state_dict: dict,
         param_group: Dict[str, Any],
     ) -> torch.Tensor:
-        return sharded_grad
+        return sharded_grad.to(param.device).to(param.dtype)
 
 class DeToNATION(torch.optim.SGD):
     def __init__(
