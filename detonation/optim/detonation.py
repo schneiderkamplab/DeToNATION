@@ -10,7 +10,7 @@ In an exisiting codebase that uses PyTorch and one of these sharding strategies,
 `torch.distributed.DistributedDataParallel.no_sync` to disable external gradient synchronization.
 See https://pytorch.org/docs/stable/generated/torch.nn.parallel.DistributedDataParallel.html#torch.nn.parallel.DistributedDataParallel.no_sync
 TODO:
-* implement full gradient replication
+* grab replication_parallel_group at init time
 * make sharding strategy a parameter
 * automatically detect sharding strategy from model
 * automatically detect sharding and replication groups from torch.dist or model

@@ -41,6 +41,7 @@ class DeMoReplicator(Replicator):
                 if p.requires_grad:
                     optim.state[p]["demo_delta"] = torch.zeros_like(p)
         self.transform = TransformDCT(optim.param_groups, self.compression_chunk)
+        self._replication_world_size = optim.replication_parallel_group.size()
 
     def step(self):
         self.data_transmit = 0
@@ -79,9 +80,8 @@ class DeMoReplicator(Replicator):
         delta.sub_(transmit_grad)
 
         # Prepare and gather the indices and values
-        replication_world_size = replication_parallel_group.size()
-        sparse_idx_gather = [torch.zeros_like(sparse_idx) for _ in range(replication_world_size)]
-        sparse_val_gather = [torch.zeros_like(sparse_val) for _ in range(replication_world_size)]
+        sparse_idx_gather = [torch.zeros_like(sparse_idx) for _ in range(self._replication_world_size)]
+        sparse_val_gather = [torch.zeros_like(sparse_val) for _ in range(self._replication_world_size)]
         sparse_idx_handle = dist.all_gather(sparse_idx_gather, sparse_idx, group=replication_parallel_group, async_op=True)
         sparse_val_handle = dist.all_gather(sparse_val_gather, sparse_val, group=replication_parallel_group, async_op=True)
         sparse_idx_handle.wait()
