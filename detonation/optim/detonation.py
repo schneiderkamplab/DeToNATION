@@ -129,6 +129,8 @@ class DeToNATION(torch.optim.SGD):
         if self._replication_world_size == 0:
             raise ValueError("Replication world size cannot be zero")
 
+        self.replicator.init(self)
+
     def _grad_reduce_scatter(self, grad: torch.Tensor):
         # Do not reduce_scatter if the gradient is not sharded
         if self._sharding_world_size == 1:
