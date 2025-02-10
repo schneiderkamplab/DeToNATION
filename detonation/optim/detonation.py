@@ -23,7 +23,7 @@ import torch.fft
 import torch.distributed as dist
 from typing import Any, Callable, Dict, Optional
 
-__all__ = ["DeToNATION", "Replicator"]
+__all__ = ["DeToNATION", "FullReplicator", "NoReplicator", "Replicator"]
 
 class Replicator(ABC):
     """
@@ -41,6 +41,7 @@ class Replicator(ABC):
 
     @abstractmethod
     def replicate(
+        self,
         sharded_grad: torch.Tensor,
         replication_parallel_group: dist.ProcessGroup,
         param: torch.nn.Parameter,
@@ -70,6 +71,7 @@ class FullReplicator(Replicator):
         pass
 
     def replicate(
+        self,
         sharded_grad: torch.Tensor,
         replication_parallel_group: dist.ProcessGroup,
         param: torch.nn.Parameter,
@@ -88,6 +90,7 @@ class NoReplicator(Replicator):
         pass
 
     def replicate(
+        self,
         sharded_grad: torch.Tensor,
         replication_parallel_group: dist.ProcessGroup,
         param: torch.nn.Parameter,
