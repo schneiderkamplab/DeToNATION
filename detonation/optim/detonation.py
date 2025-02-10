@@ -79,7 +79,7 @@ class FullReplicator(Replicator):
         param_group: Dict[str, Any],
     ) -> torch.Tensor:
         dist.all_reduce(sharded_grad, dist.ReduceOp.AVG, group=replication_parallel_group)
-        return sharded_grad
+        return sharded_grad.to(param.grad.device).to(param.grad.dtype)
 
 class NoReplicator(Replicator):
 
