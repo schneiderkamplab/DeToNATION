@@ -17,6 +17,8 @@ TODO:
 * create prepare_model function that wraps model and auto-detects policy, if none is given in the constructor
   according to the model's structure
 * compute transmitted data for full and no replication (and make that a part of the DeToNATION)
+* profiling of GPU, CPU, network, and wall time usage (optimize DeMoReplicator? stream replications instead of waiting?)
+* implement replicate-every
 """
 
 import torch
@@ -39,6 +41,7 @@ class DeToNATION(torch.optim.SGD):
         sharding_parallel_group: Optional[dist.ProcessGroup] = None,
         replication_parallel_group: Optional[dist.ProcessGroup] = None,
         replicator: Replicator = DeMoReplicator(),
+        replicate_every: int = 1,
         **kwargs,
     ):
         super().__init__(
@@ -57,6 +60,7 @@ class DeToNATION(torch.optim.SGD):
         self.sharding_parallel_group = sharding_parallel_group # intra-node communication 
         self.replication_parallel_group = replication_parallel_group # inter-node communication
         self.replicator = replicator
+        self.replicate_every = replicate_every
 
         self._sharding_world_size = dist.get_world_size(self.sharding_parallel_group)
         self._replication_world_size = dist.get_world_size(self.replication_parallel_group)
@@ -66,6 +70,7 @@ class DeToNATION(torch.optim.SGD):
         if self._replication_world_size == 0:
             raise ValueError("Replication world size cannot be zero")
 
+        self.state["detonation_step"] = 0
         self.replicator.init(self)
 
     def _grad_reduce_scatter(self, grad: torch.Tensor):
@@ -90,6 +95,7 @@ class DeToNATION(torch.optim.SGD):
 
     @torch.no_grad()
     def step(self, closure: Callable | None = None):
+        self.state["detonation_step"] += 1
 
         # Any step-wise initialization needed by the replicator
         self.replicator.pre_step()
@@ -110,12 +116,15 @@ class DeToNATION(torch.optim.SGD):
                     param.data.mul_(1.0 - lr * self.weight_decay)
 
                 # Replicating the gradient if needed
-                new_grad = self.replicator.replicate(
-                    sharded_grad=sharded_grad,
-                    param=param,
-                    param_state_dict=self.state[param],
-                    param_group=group,
-                )
+                if self.state["detonation_step"] % self.replicate_every == 0:
+                    new_grad = self.replicator.replicate(
+                        sharded_grad=sharded_grad,
+                        param=param,
+                        param_state_dict=self.state[param],
+                        param_group=group,
+                    )
+                else:
+                    new_grad = sharded_grad.to(param.device).to(param.dtype)
                 param.grad = new_grad
 
                 # Sign-SGD
