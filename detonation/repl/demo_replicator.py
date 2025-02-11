@@ -43,7 +43,7 @@ class DeMoReplicator(Replicator):
         self.data_transmit = 0
         self.data_receive = 0
 
-    def pre_step(self):
+    def post_step(self):
         print(f"Data transmitted: {self.data_transmit} bytes")
         print(f"Data received: {self.data_receive} bytes")
 
