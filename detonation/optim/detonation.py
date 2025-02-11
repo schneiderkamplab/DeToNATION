@@ -13,6 +13,7 @@ TODO:
 * make sharding strategy a parameter
 * automatically detect sharding strategy from model
 * automatically detect sharding and replication groups from torch.dist or model
+* integrate automatic testing with a small distributed test suite
 """
 
 import torch
