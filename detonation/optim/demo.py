@@ -1,55 +1,30 @@
 """DeMo: Decoupled Momentum Optimization
 
-This implements the DeMo optimizer for DDP, FSDP, and HSDP. It builds on the DeMo for DDP code adapted
-and sourced from https://github.com/bloc97/DeMo
-In an exisiting codebase that uses PyTorch and one of these sharding strategies, wrap your forward-backward in 
-`torch.distributed.DistributedDataParallel.no_sync` to disable external gradient synchronization.
-See https://pytorch.org/docs/stable/generated/torch.nn.parallel.DistributedDataParallel.html#torch.nn.parallel.DistributedDataParallel.no_sync
+This implements DeMo replication for DeToNATION.
 """
 
+from einops import rearrange
 import math
 import torch
 import torch.fft
 import torch.distributed as dist
-import torch.functional as F
+from typing import Any, Dict, Optional
 
-from einops import rearrange
-from typing import Optional, Callable
+from .detonation import DeToNATION, Replicator
+__all__ = ["DeMo", "DeMoReplicator"]
 
-class DeMo(torch.optim.SGD):
+
+class DeMoReplicator(Replicator):
     def __init__(
         self,
-        params,
         compression_decay: float = 0.999,
         compression_topk: int = 32,
         compression_chunk: int = 64,
-        weight_decay: float = 0.0,
-        sign: bool = True,
-        sharding_parallel_group: Optional[dist.ProcessGroup] = None,
-        replication_parallel_group: Optional[dist.ProcessGroup] = None,
-        **kwargs,
     ):
-        super().__init__(
-            params,
-            foreach=False,
-            momentum=0.0,
-            dampening=0.0,
-            nesterov=False,
-            maximize=False,
-            weight_decay=0.0,
-            **kwargs,
-        )
-
         self.compression_decay = compression_decay
         self.compression_chunk = compression_chunk
         self.compression_topk = compression_topk
-        self.sharding_parallel_group = sharding_parallel_group # intra-node communication 
-        self.replication_parallel_group = replication_parallel_group # inter-node communication
-        self.weight_decay = weight_decay
-        self.sign = sign
-
-        self._sharding_world_size = dist.get_world_size(self.sharding_parallel_group)
-        self._replication_world_size = dist.get_world_size(self.replication_parallel_group)
+        self.compress = CompressDCT()
 
         if self.compression_topk <= 0:
             raise ValueError("topk_size has to be positive")
@@ -59,42 +34,34 @@ class DeMo(torch.optim.SGD):
             raise ValueError("Negative compression_decay is currently not supported")
         if self.compression_decay >= 1:
             raise ValueError("Values of compression_decay bigger or equal to 1.0 is currently not supported")
-        if self._sharding_world_size == 0:
-            raise ValueError("Sharding world size cannot be zero")
-        if self._replication_world_size == 0:
-            raise ValueError("Replication world size cannot be zero")
 
-        self._demo_state = {
-            p: {"delta": torch.zeros_like(p)}
-            for group in self.param_groups
-            for p in group["params"]
-            if p.requires_grad
-        }
+    def init(self, optim: torch.optim.Optimizer):
+        for group in optim.param_groups:
+            for p in group["params"]:
+                if p.requires_grad:
+                    optim.state[p]["demo_delta"] = torch.zeros_like(p)
+        self.transform = TransformDCT(optim.param_groups, self.compression_chunk)
+        self.replication_parallel_group = optim.replication_parallel_group
+        self._replication_world_size = optim.replication_parallel_group.size()
 
-        self.transform = TransformDCT(self.param_groups, self.compression_chunk, self.sharding_parallel_group)
-        self.compress = CompressDCT()
+    def step(self):
+        self.data_transmit = 0
+        self.data_receive = 0
 
-    def _grad_reduce_scatter(self, grad: torch.Tensor):
-        # Do not reduce_scatter if the gradient is not sharded
-        if self._sharding_world_size == 1:
-            return grad
+    def replicate(
+        self,
+        sharded_grad: torch.Tensor,
+        param: torch.nn.Parameter,
+        param_state_dict: dict,
+        param_group: Dict[str, Any],
+    ) -> torch.Tensor:
+        # Decay delta and add the gradient
+        delta = param_state_dict["demo_delta"]
+        if self.compression_decay != 1:
+            delta.mul_(self.compression_decay)
+        delta.add_(sharded_grad, alpha=param_group["lr"])
 
-        # Chunk and pad the unsharded gradient
-        chunks = list(grad.chunk(self._sharding_world_size))
-        numel_to_pad = self._sharding_world_size * chunks[0].numel() - grad.numel()
-        padded_unsharded_grad = F.pad(grad, [0, numel_to_pad]) if numel_to_pad > 0 else grad
-
-        # Prepare and scatter the sharded gradient
-        sharded_grad = torch.empty_like(chunks[0])
-        dist.reduce_scatter_tensor(
-            sharded_grad,
-            padded_unsharded_grad,
-            op=dist.ReduceOp.AVG,
-            group=self.sharding_parallel_group,
-        )
-        return sharded_grad
-
-    def _delta_all_gather(self, delta: torch.Tensor, device: torch.device, dtype: torch.dtype):
+        # Replicating delta only if needed
         if self._replication_world_size == 1:
             new_grad = delta.clone()
             delta.zero_()
@@ -107,7 +74,7 @@ class DeMo(torch.optim.SGD):
 
         # Estimate transmitted delta
         transmit_grad = self.transform.decode(
-            self.compress.decompress(sparse_idx, sparse_val, xshape, device, dtype)
+            self.compress.decompress(sparse_idx, sparse_val, xshape, param.device, param.dtype)
         )
 
         # Remove transmitted from delta
@@ -128,49 +95,37 @@ class DeMo(torch.optim.SGD):
 
         # Decode new gradient from all nodes
         new_grad = self.transform.decode(
-            self.compress.batch_decompress(sparse_idx_gather, sparse_val_gather, xshape, device, dtype)
+            self.compress.batch_decompress(sparse_idx_gather, sparse_val_gather, xshape, param.device, param.dtype)
         )
         return new_grad
 
-    @torch.no_grad()
-    def step(self, closure: Callable | None = None):
 
-        self.data_transmit = 0
-        self.data_receive = 0
-
-        for group in self.param_groups:
-            lr = group["lr"]
-            for p in group["params"]:
-                if not p.requires_grad:
-                    continue
-
-                # Sharding gradient if needed
-                unsharded_grad = p.grad.data
-                p.grad = None
-                sharded_grad = self._grad_reduce_scatter(unsharded_grad)
-
-                # Step-Weight decay
-                if self.weight_decay != 0.0:
-                    p.data.mul_(1.0 - lr * self.weight_decay)
-
-                # Decay delta and add the gradient
-                delta = self._demo_state[p]["delta"]
-                if self.compression_decay != 1:
-                    delta.mul_(self.compression_decay)
-                delta.add_(sharded_grad, alpha=lr)
-
-                # Replicating delta if needed
-                new_grad = self._delta_all_gather(delta, p.device, p.dtype)
-
-                # Set grad to values
-                p.grad = new_grad
-
-                # Sign-SGD
-                if self.sign:
-                    p.grad.sign_()
-
-        # SGD step
-        return super().step(closure)
+class DeMo(DeToNATION):
+    def __init__(
+        self,
+        params,
+        compression_decay: float = 0.999,
+        compression_topk: int = 32,
+        compression_chunk: int = 64,
+        weight_decay: float = 0.0,
+        sign: bool = True,
+        sharding_parallel_group: Optional[dist.ProcessGroup] = None,
+        replication_parallel_group: Optional[dist.ProcessGroup] = None,
+        **kwargs,
+    ):
+        super().__init__(
+            params,
+            weight_decay=weight_decay,
+            sign=sign,
+            sharding_parallel_group=sharding_parallel_group,
+            replication_parallel_group=replication_parallel_group,
+            replicator=DeMoReplicator(
+                compression_decay=compression_decay,
+                compression_topk=compression_topk,
+                compression_chunk=compression_chunk,
+            ),
+            **kwargs,
+        )
 
 
 class TransformDCT:

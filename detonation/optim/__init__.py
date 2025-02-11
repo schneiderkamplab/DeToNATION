@@ -1,1 +1,2 @@
-from .demo import DeMo
+from .demo import *
+from .detonation import *
