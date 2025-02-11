@@ -57,9 +57,7 @@ def main():
     c = 3
     num_steps_syn = 20
 
-    # Each process runs on 1 GPU device specified by the local_rank argument.
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument("--local_rank", type=int, help="Local rank. Necessary for using the torch.distributed.launch utility.")
     parser.add_argument("--num_epochs", type=int, help="Number of training epochs.", default=num_epochs_default)
     parser.add_argument("--batch_size", type=int, help="Training batch size for one process.", default=batch_size_default)
     parser.add_argument("--learning_rate", type=float, help="Learning rate.", default=learning_rate_default)
@@ -72,7 +70,6 @@ def main():
     parser.add_argument("--use_syn", action="store_true", help="Use synthetic data")
     argv = parser.parse_args()
 
-    local_rank = argv.local_rank
     num_epochs = argv.num_epochs
     batch_size = argv.batch_size
     learning_rate = argv.learning_rate
@@ -102,12 +99,13 @@ def main():
     model = getattr(torchvision.models, argv.arch)(pretrained=False)
     print(model)
 
+    local_rank = os.environ["RANK"]
     device = torch.device("cuda:{}".format(local_rank))
     model = model.to(device)
     fsdp_model = FSDP(
         model,
         sharding_strategy=ShardingStrategy.HYBRID_SHARD,
-        auto_wrap_policy=ModuleWrapPolicy(module_classes=[torchvision.models.resnet.BasicBlock]),
+        auto_wrap_policy=ModuleWrapPolicy(module_classes=[torch.nn.Sequential]),
     )
 
     # We only save the model who uses device "cuda:0"
@@ -126,8 +124,8 @@ def main():
 
     # Data should be prefetched
     # Download should be set to be False, because it is not multiprocess safe
-    train_set = torchvision.datasets.CIFAR10(root="data", train=True, download=False, transform=transform) 
-    test_set = torchvision.datasets.CIFAR10(root="data", train=False, download=False, transform=transform)
+    train_set = torchvision.datasets.CIFAR10(root="data", train=True, download=True, transform=transform) 
+    test_set = torchvision.datasets.CIFAR10(root="data", train=True, download=False, transform=transform)
 
     # Restricts data loading to a subset of the dataset exclusive to the current process
     train_sampler = DistributedSampler(dataset=train_set)
