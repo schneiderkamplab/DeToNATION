@@ -16,6 +16,7 @@ TODO:
 * integrate automatic testing with a small distributed test suite
 * create prepare_model function that wraps model and auto-detects policy, if none is given in the constructor
   according to the model's structure
+* compute transmitted data for full and no replication (and make that a part of the DeToNATION)
 """
 
 import torch
