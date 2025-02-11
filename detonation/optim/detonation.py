@@ -14,6 +14,8 @@ TODO:
 * automatically detect sharding strategy from model
 * automatically detect sharding and replication groups from torch.dist or model
 * integrate automatic testing with a small distributed test suite
+* create prepare_model function that wraps model and auto-detects policy, if none is given in the constructor
+  according to the model's structure
 """
 
 import torch

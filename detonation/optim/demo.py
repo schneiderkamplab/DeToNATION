@@ -3,13 +3,6 @@
 This implements DeMo replication for DeToNATION.
 """
 
-from einops import rearrange
-import math
-import torch
-import torch.fft
-import torch.distributed as dist
-from typing import Any, Dict, Optional
-
 from .detonation import DeToNATION
 from ..repl import DeMoReplicator
 
