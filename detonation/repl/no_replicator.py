@@ -7,12 +7,6 @@ __all__ = ["NoReplicator"]
 
 class NoReplicator(Replicator):
 
-    def init(self, optim: torch.optim.Optimizer):
-        pass
-
-    def step(self):
-        pass
-
     def replicate(
         self,
         sharded_grad: torch.Tensor,

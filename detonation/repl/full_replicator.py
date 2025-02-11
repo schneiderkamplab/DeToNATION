@@ -11,9 +11,6 @@ class FullReplicator(Replicator):
     def init(self, optim: torch.optim.Optimizer):
         self.replication_parallel_group = optim.replication_parallel_group
 
-    def step(self):
-        pass
-
     def replicate(
         self,
         sharded_grad: torch.Tensor,

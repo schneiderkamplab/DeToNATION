@@ -10,12 +10,22 @@ class Replicator(ABC):
     :class:`DeToNATION` optimizer for replicating gradients across replication groups (typically nodes).
     """
 
-    @abstractmethod
     def init(self, optim: torch.optim.Optimizer):
+        """
+        Initialize the replicator.
+        """
         pass
 
-    @abstractmethod
-    def step(self):
+    def pre_step(self):
+        """
+        Pre-step hook.
+        """
+        pass
+
+    def post_step(self):
+        """
+        Post-step hook.
+        """
         pass
 
     @abstractmethod
@@ -31,9 +41,9 @@ class Replicator(ABC):
 
         Args:
             sharded_grad (torch.Tensor): The sharded gradient tensor.
-            replication_parallel_group (dist.ProcessGroup): The replication parallel group.
+            param (torch.nn.Parameter): The current parameter.
             param_state_dict (dict): The state dictionary of the parameter.
-            param_group (Dict[str, Any]): The parameter group.
+            param_group (Dict[str, Any]): The current parameter group.
 
         Returns:
             torch.Tensor: The replicated gradient tensor.

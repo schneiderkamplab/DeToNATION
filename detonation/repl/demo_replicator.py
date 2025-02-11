@@ -39,9 +39,13 @@ class DeMoReplicator(Replicator):
         self.replication_parallel_group = optim.replication_parallel_group
         self._replication_world_size = optim.replication_parallel_group.size()
 
-    def step(self):
+    def pre_step(self):
         self.data_transmit = 0
         self.data_receive = 0
+
+    def pre_step(self):
+        print(f"Data transmitted: {self.data_transmit} bytes")
+        print(f"Data received: {self.data_receive} bytes")
 
     def replicate(
         self,

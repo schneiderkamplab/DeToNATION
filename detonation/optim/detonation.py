@@ -91,7 +91,7 @@ class DeToNATION(torch.optim.SGD):
     def step(self, closure: Callable | None = None):
 
         # Any step-wise initialization needed by the replicator
-        self.replicator.step()
+        self.replicator.pre_step()
 
         for group in self.param_groups:
             lr = group["lr"]
@@ -122,4 +122,9 @@ class DeToNATION(torch.optim.SGD):
                     param.grad.sign_()
 
         # SGD step
-        return super().step(closure)
+        result = super().step(closure)
+
+        # Any step-wise finalization needed by the replicator
+        self.replicator.post_step()
+
+        return result
