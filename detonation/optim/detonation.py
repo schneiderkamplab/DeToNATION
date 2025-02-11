@@ -13,89 +13,24 @@ TODO:
 * make sharding strategy a parameter
 * automatically detect sharding strategy from model
 * automatically detect sharding and replication groups from torch.dist or model
+* integrate automatic testing with a small distributed test suite
+* create prepare_model function that wraps model and auto-detects policy, if none is given in the constructor
+  according to the model's structure
+* compute transmitted data for full and no replication (and make that a part of the DeToNATION)
 """
 
-from abc import ABC, abstractmethod
 import torch
 import torch.distributed as dist
 import torch.fft
 import torch.nn.functional as F
-from typing import Any, Callable, Dict, Optional
+from typing import Callable, Optional
 
-__all__ = ["DeToNATION", "FullReplicator", "NoReplicator", "Replicator"]
+from ..repl import DeMoReplicator, Replicator
 
-class Replicator(ABC):
-    """
-    This provides the functions to initialize and execute replicators to be used by the
-    :class:`DeToNATION` optimizer for replicating gradients across replication groups (typically nodes).
-    """
-
-    @abstractmethod
-    def init(self, optim: torch.optim.Optimizer):
-        pass
-
-    @abstractmethod
-    def step(self):
-        pass
-
-    @abstractmethod
-    def replicate(
-        self,
-        sharded_grad: torch.Tensor,
-        param: torch.nn.Parameter,
-        param_state_dict: dict,
-        param_group: Dict[str, Any],
-    ):
-        """
-        Replicate the gradient across the replication group.
-
-        Args:
-            sharded_grad (torch.Tensor): The sharded gradient tensor.
-            replication_parallel_group (dist.ProcessGroup): The replication parallel group.
-            param_state_dict (dict): The state dictionary of the parameter.
-            param_group (Dict[str, Any]): The parameter group.
-
-        Returns:
-            torch.Tensor: The replicated gradient tensor.
-        """
-        pass
-
-class FullReplicator(Replicator):
-
-    def init(self, optim: torch.optim.Optimizer):
-        self.replication_parallel_group = optim.replication_parallel_group
-
-    def step(self):
-        pass
-
-    def replicate(
-        self,
-        sharded_grad: torch.Tensor,
-        param: torch.nn.Parameter,
-        param_state_dict: dict,
-        param_group: Dict[str, Any],
-    ) -> torch.Tensor:
-        dist.all_reduce(sharded_grad, dist.ReduceOp.AVG, group=self.replication_parallel_group)
-        return sharded_grad.to(param.device).to(param.dtype)
-
-class NoReplicator(Replicator):
-
-    def init(self, optim: torch.optim.Optimizer):
-        pass
-
-    def step(self):
-        pass
-
-    def replicate(
-        self,
-        sharded_grad: torch.Tensor,
-        param: torch.nn.Parameter,
-        param_state_dict: dict,
-        param_group: Dict[str, Any],
-    ) -> torch.Tensor:
-        return sharded_grad.to(param.device).to(param.dtype)
+__all__ = ["DeToNATION"]
 
 class DeToNATION(torch.optim.SGD):
+
     def __init__(
         self,
         params,
@@ -103,7 +38,7 @@ class DeToNATION(torch.optim.SGD):
         sign: bool = True,
         sharding_parallel_group: Optional[dist.ProcessGroup] = None,
         replication_parallel_group: Optional[dist.ProcessGroup] = None,
-        replicator: Replicator = FullReplicator(),
+        replicator: Replicator = DeMoReplicator(),
         **kwargs,
     ):
         super().__init__(
@@ -157,7 +92,7 @@ class DeToNATION(torch.optim.SGD):
     def step(self, closure: Callable | None = None):
 
         # Any step-wise initialization needed by the replicator
-        self.replicator.step()
+        self.replicator.pre_step()
 
         for group in self.param_groups:
             lr = group["lr"]
@@ -188,4 +123,9 @@ class DeToNATION(torch.optim.SGD):
                     param.grad.sign_()
 
         # SGD step
-        return super().step(closure)
+        result = super().step(closure)
+
+        # Any step-wise finalization needed by the replicator
+        self.replicator.post_step()
+
+        return result
