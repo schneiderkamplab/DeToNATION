@@ -15,6 +15,8 @@ import torch.optim as optim
 import torchvision
 import torchvision.transforms as transforms
 
+from detonation import DeMo
+
 import argparse
 import os
 import random
@@ -135,7 +137,7 @@ def main():
     test_loader = DataLoader(dataset=test_set, batch_size=128, shuffle=False, num_workers=8)
 
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(fsdp_model.parameters(), lr=learning_rate, momentum=0.9, weight_decay=1e-5)
+    optimizer = DeMo(fsdp_model.parameters(), lr=learning_rate, sharding_parallel_group=fsdp_model.process_group, replication_parallel_group=fsdp_model._inter_node_pg)
 
     # Synthetic data
     inputs_syn = torch.rand((batch_size, c, w, h)).to(device)
