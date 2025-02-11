@@ -24,7 +24,7 @@ from typing import Callable, Optional
 
 from ..repl import DeMoReplicator, Replicator
 
-__all__ = ["DeToNATION", "FullReplicator", "NoReplicator", "Replicator"]
+__all__ = ["DeToNATION"]
 
 class DeToNATION(torch.optim.SGD):
 
