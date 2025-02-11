@@ -158,9 +158,10 @@ def main():
             start_epoch = time.time()
             for count in range(num_steps_syn):
                 optimizer.zero_grad()
-                outputs = fsdp_model(inputs_syn)
-                loss = criterion(outputs, labels_syn)
-                loss.backward()
+                with fsdp_model.no_sync():
+                    outputs = fsdp_model(inputs_syn)
+                    loss = criterion(outputs, labels_syn)
+                    loss.backward()
                 optimizer.step()
             torch.cuda.synchronize()
             end_epoch = time.time()
