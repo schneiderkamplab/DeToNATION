@@ -38,14 +38,16 @@ class DeMoReplicator(Replicator):
         self.transform = DCTTransform(optim.param_groups, self.compression_chunk)
         self.replication_parallel_group = optim.replication_parallel_group
         self._replication_world_size = optim.replication_parallel_group.size()
+        self.data_transmitted = []
+        self.data_received = []
 
     def pre_step(self):
         self.data_transmit = 0
         self.data_receive = 0
 
     def post_step(self):
-        print(f"Data transmitted: {self.data_transmit} bytes")
-        print(f"Data received: {self.data_receive} bytes")
+        self.data_transmitted.append(self.data_transmit)
+        self.data_received.append(self.data_receive)
 
     def replicate(
         self,
