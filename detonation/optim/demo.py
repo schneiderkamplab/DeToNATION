@@ -10,7 +10,7 @@ import torch.fft
 import torch.distributed as dist
 from typing import Any, Dict, Optional
 
-from . import DeToNATION
+from .detonation import DeToNATION
 from ..repl import DeMoReplicator
 
 __all__ = ["DeMo"]
