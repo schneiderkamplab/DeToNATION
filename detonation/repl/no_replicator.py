@@ -1,7 +1,7 @@
 import torch
 from typing import Any, Dict
 
-from . import Replicator
+from .replicator import Replicator
 
 __all__ = ["NoReplicator"]
 

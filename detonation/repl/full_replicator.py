@@ -2,7 +2,7 @@ import torch
 import torch.distributed as dist
 from typing import Any, Dict
 
-from . import Replicator
+from .replicator import Replicator
 
 __all__ = ["FullReplicator"]
 

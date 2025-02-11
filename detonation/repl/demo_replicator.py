@@ -4,7 +4,7 @@ import torch.fft
 
 from typing import Dict, Any
 
-from . import Replicator
+from .replicator import Replicator
 from ..util import DCTCompress, DCTTransform
 
 __all__ = ["DeMoReplicator"]
