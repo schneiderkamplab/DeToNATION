@@ -1,11 +1,11 @@
 import click
 from datasets import load_dataset
-from detonation import DeMo
+from detonation import DeMoReplicator, prepare_detonation
 import functools
 import os
 import torch
 import torch.distributed as dist
-from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, MixedPrecision, ShardingStrategy
+from torch.distributed.fsdp import MixedPrecision
 from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader, Dataset
@@ -60,7 +60,7 @@ def train(epochs, model, train_loader, val_loader, optimizer, scheduler, train_s
 
 def setup(batch_size):
     torch.manual_seed(42)
-    # setup model and tokenizer
+    # prepare model
     tokenizer =  T5Tokenizer.from_pretrained("t5-small", legacy=False)
     model = T5ForConditionalGeneration(T5Config.from_pretrained("google-t5/t5-small"))
     # prepare dataset
@@ -71,17 +71,11 @@ def setup(batch_size):
     train_sampler = DistributedSampler(train_dataset, shuffle=True)
     train_loader = DataLoader(train_dataset, batch_size=batch_size, sampler=train_sampler)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, sampler=DistributedSampler(val_dataset))
-    # distribute model
-    local_rank = int(os.environ['LOCAL_RANK'])
-    torch.cuda.set_device(local_rank)
-    model = FSDP(model,
-        auto_wrap_policy=functools.partial(transformer_auto_wrap_policy, transformer_layer_cls={T5Block}),
-        mixed_precision=MixedPrecision(param_dtype=torch.bfloat16, reduce_dtype=torch.bfloat16, buffer_dtype=torch.bfloat16) if torch.cuda.is_bf16_supported() else None,
-        device_id=local_rank,
-        sharding_strategy=ShardingStrategy.HYBRID_SHARD,
-    )
-    # setup optimizer and scheduler
-    optimizer = DeMo(model.parameters(), compression_topk=4, sharding_parallel_group=model.process_group, replication_parallel_group=model._inter_node_pg)
+    # preapre distributed training
+    torch.cuda.set_device(int(os.environ['LOCAL_RANK']))
+    auto_wrap_policy = functools.partial(transformer_auto_wrap_policy, transformer_layer_cls={T5Block})
+    mixed_precision = MixedPrecision(param_dtype=torch.bfloat16, reduce_dtype=torch.bfloat16, buffer_dtype=torch.bfloat16) if torch.cuda.is_bf16_supported() else None
+    model, optimizer = prepare_detonation(model, DeMoReplicator(compression_topk=4), auto_wrap_policy=auto_wrap_policy, mixed_precision=mixed_precision)
     scheduler = StepLR(optimizer, step_size=1, gamma=0.85)
     return model, train_loader, val_loader, optimizer, scheduler, train_sampler
 

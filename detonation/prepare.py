@@ -17,7 +17,8 @@ def prepare_detonation(
     replicator: Replicator,
     sharding_group_size: Optional[int] = None,
     replication_group_size: Optional[int] = None,
-    **kwargs,
+    detonation_kwargs: dict = {},
+    **fsdp_kwargs,
 ) -> Tuple[torch.nn.Module, torch.optim.Optimizer]:
     world_size = int(os.environ['WORLD_SIZE'])
     local_world_size = int(os.environ['LOCAL_WORLD_SIZE'])
@@ -38,7 +39,15 @@ def prepare_detonation(
     model = FSDP(
         model,
         device_mesh=mesh_2d,
+        device_id=int(os.environ['LOCAL_RANK']),
         sharding_strategy=ShardingStrategy.HYBRID_SHARD,
+        **fsdp_kwargs,
     )
-    optim = DeToNATION(model.parameters(), replicator=replicator, **kwargs)
+    optim = DeToNATION(
+        model.parameters(),
+        replicator=replicator,
+        sharding_parallel_group=model.process_group,
+        replication_parallel_group=model._inter_node_pg,
+        **detonation_kwargs,
+    )
     return model, optim
