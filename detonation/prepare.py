@@ -46,7 +46,7 @@ def prepare_detonation(
             device_type="cuda",
             mesh_shape=(sharding_group_size, replication_group_size),
         )
-        process_group = N
+        process_group = None
     assert world_size == sharding_group_size * replication_group_size
     assert local_world_size % sharding_group_size == 0
     model = FSDP(
