@@ -9,12 +9,9 @@ In an exisiting codebase that uses PyTorch and one of these sharding strategies,
 `torch.distributed.DistributedDataParallel.no_sync` to disable external gradient synchronization.
 See https://pytorch.org/docs/stable/generated/torch.nn.parallel.DistributedDataParallel.html#torch.nn.parallel.DistributedDataParallel.no_sync
 TODO:
-* integrate automatic testing with a small distributed test suite
-* create prepare_model function that wraps model and auto-detects policy, if none is given in the constructor
-  according to the model's structure
-* compute transmitted data for full and no replication (and make that a part of the DeToNATION)
+* auto-detect policy if none is given in prepare_detonation according to the model's structure
+* compute transmitted data for full and no replication (and make that a part of the DeToNATION?)
 * profiling of GPU, CPU, network, and wall time usage (optimize DeMoReplicator? stream replications instead of waiting?)
-* implement replicate-every
 """
 
 import torch
