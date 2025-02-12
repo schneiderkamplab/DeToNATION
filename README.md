@@ -13,8 +13,15 @@ cd DeToNATION
 pip install .
 ```
 
+## Example
+There is a a full example for language model training using FlexDeMo in the example folder. Please refer to the documentation:
+```
+examples/t5/README.md
+```
+This example demonstrates the use of the `prepare_detonation` function for obtaining a distributed model and optimizer.
+
 ## Usage
-The usage requires three elements as exemplified below for using the FlexDeMo optimizer.
+The direct usage of DeToNATION without using `prepare_detonation` requires three elements as exemplified below for the FlexDeMo optimizer, i.e., DeToNATION with node-based hybrid sharding using DeMo replication.
 
 First, you need to wrap your model with FSDP and the hybrid sharding strategy:
 ```
