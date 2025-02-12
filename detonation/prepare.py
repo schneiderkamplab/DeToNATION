@@ -25,14 +25,12 @@ def prepare_detonation(
     world_size = int(os.environ['WORLD_SIZE'])
     local_world_size = int(os.environ['LOCAL_WORLD_SIZE'])
     if (sharding_parallel_group is None) ^ (replication_parallel_group is None):
-        raise ValueError("Cannot specify replication_parallel_group without sharding_parallel_group")
+        raise ValueError("Cannot specify only one of replication_parallel_group and sharding_parallel_group")
     if sharding_parallel_group is not None:
         if replication_group_size is not None or sharding_group_size is not None:
             raise ValueError("Cannot specify both group sizes and parallel groups")
         sharding_group_size = sharding_parallel_group.size()
         replication_group_size = replication_parallel_group.size()
-        mesh_2d = None
-        process_group = (sharding_parallel_group, replication_parallel_group)
     else:
         if sharding_group_size is None:
             if replication_group_size is None:
@@ -46,20 +44,17 @@ def prepare_detonation(
             device_type="cuda",
             mesh_shape=(sharding_group_size, replication_group_size),
         )
-        process_group = None
+        sharding_parallel_group = mesh_2d.get_group(1)
+        replication_parallel_group = mesh_2d.get_group(0)
     assert world_size == sharding_group_size * replication_group_size
     assert local_world_size % sharding_group_size == 0
     model = FSDP(
         model,
-        device_mesh=mesh_2d,
-        process_group=process_group,
+        process_group=(sharding_parallel_group, replication_parallel_group),
         device_id=int(os.environ['LOCAL_RANK']),
         sharding_strategy=ShardingStrategy.HYBRID_SHARD,
         **fsdp_kwargs,
     )
-    if process_group is None:
-        sharding_parallel_group = model.process_group
-        replication_parallel_group = model._inter_node_pg
     optim = DeToNATION(
         model.parameters(),
         replicator=replicator,
