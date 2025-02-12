@@ -1,0 +1,5 @@
+click
+datasets
+protobuf
+sentencepiece
+transformers
