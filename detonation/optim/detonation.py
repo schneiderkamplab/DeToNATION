@@ -1,18 +1,14 @@
 """DeToNATION: Decoupled Torch Network-Aware Training on Interlinked Online Nodes
 
-This implements the DeToNATION optimizer for DDP, FSDP, and HSDP. For gradient synchronization, it offers
-a number of approaches:
+This implements the DeToNATION optimizer that works in DDP, FSDP, and HSDP settings. For gradient
+synchronization in DDP and HSDP settings, it offers a number of approaches:
 * no gradient replication
-* Decouplee Momentum (DeMo) repliation - https://arxiv.org/abs/2106.11447 with the implementation
-  adapted from https://github.com/bloc97/DeMo
+* Decoupled Momentum (DeMo) repliation - https://arxiv.org/abs/2106.11447 with the implementation based on https://github.com/bloc97/DeMo
 * full gradient replication
 In an exisiting codebase that uses PyTorch and one of these sharding strategies, wrap your forward-backward in 
 `torch.distributed.DistributedDataParallel.no_sync` to disable external gradient synchronization.
 See https://pytorch.org/docs/stable/generated/torch.nn.parallel.DistributedDataParallel.html#torch.nn.parallel.DistributedDataParallel.no_sync
 TODO:
-* make sharding strategy a parameter
-* automatically detect sharding strategy from model
-* automatically detect sharding and replication groups from torch.dist or model
 * integrate automatic testing with a small distributed test suite
 * create prepare_model function that wraps model and auto-detects policy, if none is given in the constructor
   according to the model's structure
