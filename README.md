@@ -1,5 +1,7 @@
 # Decoupled Torch Network-Aware Training on Interlinked Online Nodes (DeToNATION)
 
+This code currently implements the results described in [FlexDeMo: Decoupled Momentum Optimization for Fully and Hybrid Sharded Training](https://arxiv.org/abs/2502.06728).
+
 ## Installation
 Installation from PyPI:
 ```
