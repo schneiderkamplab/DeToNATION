@@ -30,14 +30,18 @@ class DeMoReplicator(Replicator):
         if self.compression_decay >= 1:
             raise ValueError("Values of compression_decay bigger or equal to 1.0 is currently not supported")
 
-    def init(self, optim: torch.optim.Optimizer):
+    def init(
+            self,
+            optim: torch.optim.Optimizer,
+            replication_parallel_group: dist.ProcessGroup | None = None,
+        ):
         for group in optim.param_groups:
             for p in group["params"]:
                 if p.requires_grad:
                     optim.state[p]["demo_delta"] = torch.zeros_like(p)
         self.transform = DCTTransform(optim.param_groups, self.compression_chunk)
-        self.replication_parallel_group = optim.replication_parallel_group
-        self._replication_world_size = optim.replication_parallel_group.size()
+        self.replication_parallel_group = optim.replication_parallel_group if replication_parallel_group is None else replication_parallel_group
+        self._replication_world_size = self.replication_parallel_group.size()
         self.data_transmitted = []
         self.data_received = []
 
