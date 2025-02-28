@@ -33,6 +33,8 @@ def main(batch_size, epochs, optim, compression_topk, compression_chunk, model):
         'gpus': gpus,
         'optim': optim,
         'model': model,
+        'comp_topk': compression_topk if optim=='deto-demo' else None,
+        'comp_chunk': compression_chunk if optim=='deto-demo' else None,
     })
     if rank == 0:
         print(aimrun.get_runs()[0].hash)
