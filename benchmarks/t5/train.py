@@ -1,7 +1,7 @@
 import aimrun
 import click
 from datasets import load_dataset
-from detonation import DeMoReplicator, FullReplicator, prepare_detonation
+from detonation import DeMoReplicator, FullReplicator, NoReplicator, prepare_detonation
 import functools
 import os
 import torch
@@ -20,11 +20,12 @@ from transformers.models.t5.modeling_t5 import T5Block
 @click.command()
 @click.option('--batch-size', default=32, help='input batch size for training and validation (default: 32)')
 @click.option('--epochs', default=10, help='number of epochs to train (default: 10)')
-@click.option('--optim', default='deto-demo', type=click.Choice(['deto-demo', 'deto-full', 'adamw']))
+@click.option('--optim', default='deto-demo', type=click.Choice(['deto-demo', 'deto-full', 'deto-none', 'adamw']))
 @click.option('--compression-topk', default=2)
 @click.option('--compression-chunk', default=64)
 @click.option('--model', default='google-t5/t5-small', type=click.Choice(['google-t5/t5-small', 'google-t5/t5-base', 'google-t5/t5-large']))
-def main(batch_size, epochs, optim, compression_topk, compression_chunk, model):
+@click.option('--replicate-every', default=1)
+def main(batch_size, epochs, optim, compression_topk, compression_chunk, model, replicate_every):
     rank, nnodes, gpus = int(os.environ['RANK']), int(os.environ['NNODES']), int(os.environ['GPUS'])
     aimrun.init(repo='.', experiment='t5', args={
         'batch_size': batch_size,
@@ -38,7 +39,7 @@ def main(batch_size, epochs, optim, compression_topk, compression_chunk, model):
     })
     if rank == 0:
         print(aimrun.get_runs()[0].hash)
-    model_and_co = setup(batch_size, optim, compression_topk, compression_chunk, model)
+    model_and_co = setup(batch_size, optim, compression_topk, compression_chunk, model, replicate_every)
     train(epochs, optim, *model_and_co)
 
 def train(epochs, optim, model, train_loader, val_loader, optimizer, scheduler, train_sampler):
@@ -46,6 +47,7 @@ def train(epochs, optim, model, train_loader, val_loader, optimizer, scheduler, 
     for epoch in range(1, epochs+1):
         # train
         model.train()
+        #prof.export_chrome_trace('trace.json')
         train_sampler.set_epoch(epoch)
         loss_samples = torch.zeros(2).to(model.device)
         for batch in tqdm(train_loader, desc=f"Training epoch {epoch}", disable=rank>0, colour="blue", ncols=150):
@@ -87,7 +89,7 @@ def train(epochs, optim, model, train_loader, val_loader, optimizer, scheduler, 
     dist.destroy_process_group()
     aimrun.close()
 
-def setup(batch_size, optim, compression_topk, compression_chunk, model):
+def setup(batch_size, optim, compression_topk, compression_chunk, model, replicate_every):
     torch.manual_seed(42)
     # prepare model
     tokenizer =  T5Tokenizer.from_pretrained(model, legacy=False)
@@ -105,8 +107,13 @@ def setup(batch_size, optim, compression_topk, compression_chunk, model):
     auto_wrap_policy = functools.partial(transformer_auto_wrap_policy, transformer_layer_cls={T5Block})
     mixed_precision = MixedPrecision(param_dtype=torch.bfloat16, reduce_dtype=torch.bfloat16, buffer_dtype=torch.bfloat16) if torch.cuda.is_bf16_supported() else None
     if optim.startswith('deto-'):
-        replicator = DeMoReplicator(compression_topk=compression_topk, compression_chunk=compression_chunk) if optim == 'deto-demo' else FullReplicator()
-        model, optimizer = prepare_detonation(model, replicator, fsdp_kwargs={"auto_wrap_policy": auto_wrap_policy, "mixed_precision": mixed_precision})
+        if optim == 'deto-demo':
+            replicator = DeMoReplicator(compression_topk=compression_topk, compression_chunk=compression_chunk)
+        elif optim == 'deto-full':
+            replicator = FullReplicator()
+        else:
+            replicator = NoReplicator()
+        model, optimizer = prepare_detonation(model, replicator, fsdp_kwargs={"auto_wrap_policy": auto_wrap_policy, "mixed_precision": mixed_precision}, replicate_every=replicate_every)
     else:
         model = FSDP(model, auto_wrap_policy=auto_wrap_policy, mixed_precision=mixed_precision, device_id=int(os.environ['LOCAL_RANK']), sharding_strategy=ShardingStrategy.HYBRID_SHARD)
         optimizer = AdamW(model.parameters(), lr=1e-3, weight_decay=0.)
