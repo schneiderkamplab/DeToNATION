@@ -110,8 +110,6 @@ def train(epochs, optim, single, model, train_loader, val_loader, optimizer, sch
             print(f"Epoch {epoch} validation Loss: {val_loss:.4f}")
             aimrun.track({'epoch/val/loss': val_loss}, step=epoch)
         scheduler.step()
-    import json
-    print(json.dumps(metrics, indent=2))
     dist.barrier()
     dist.destroy_process_group()
     aimrun.close()
