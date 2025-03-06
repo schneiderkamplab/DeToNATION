@@ -3,6 +3,7 @@ import click
 from datasets import load_dataset
 from detonation import DeMoReplicator, FullReplicator, NoReplicator, prepare_detonation
 import functools
+from mltiming import timing_iterator, timing
 import os
 import torch
 import torch.distributed as dist
@@ -25,7 +26,8 @@ from transformers.models.t5.modeling_t5 import T5Block
 @click.option('--compression-chunk', default=64)
 @click.option('--model', default='google-t5/t5-small', type=click.Choice(['google-t5/t5-small', 'google-t5/t5-base', 'google-t5/t5-large']))
 @click.option('--replicate-every', default=1)
-def main(batch_size, epochs, optim, compression_topk, compression_chunk, model, replicate_every):
+@click.option('--device', type=click.Choice(['cpu', 'cuda', 'mps']), default='cuda')
+def main(batch_size, epochs, optim, compression_topk, compression_chunk, model, replicate_every, device):
     rank, nnodes, gpus = int(os.environ['RANK']), int(os.environ['NNODES']), int(os.environ['GPUS'])
     aimrun.init(repo='.', experiment='t5', args={
         'batch_size': batch_size,
@@ -39,10 +41,11 @@ def main(batch_size, epochs, optim, compression_topk, compression_chunk, model, 
     })
     if rank == 0:
         print(aimrun.get_runs()[0].hash)
-    model_and_co = setup(batch_size, optim, compression_topk, compression_chunk, model, replicate_every)
-    train(epochs, optim, *model_and_co)
+    single = device in ('cpu', 'mps') or (device == 'cuda' and nnodes == gpus == 1)
+    model_and_co = setup(batch_size, optim, compression_topk, compression_chunk, model, replicate_every, device, single)
+    train(epochs, optim, single, *model_and_co)
 
-def train(epochs, optim, model, train_loader, val_loader, optimizer, scheduler, train_sampler):
+def train(epochs, optim, single, model, train_loader, val_loader, optimizer, scheduler, train_sampler):
     rank = int(os.environ['RANK'])
     for epoch in range(1, epochs+1):
         # train
@@ -50,21 +53,35 @@ def train(epochs, optim, model, train_loader, val_loader, optimizer, scheduler, 
         #prof.export_chrome_trace('trace.json')
         train_sampler.set_epoch(epoch)
         loss_samples = torch.zeros(2).to(model.device)
-        for batch in tqdm(train_loader, desc=f"Training epoch {epoch}", disable=rank>0, colour="blue", ncols=150):
-            optimizer.zero_grad()
-            if optim == 'adamw':
-                loss = model(input_ids=batch["source_ids"],attention_mask=batch["source_mask"],labels=batch["target_ids"] )["loss"]
-                loss.backward()
+        metrics = {}
+        for batch in timing_iterator(iterable=tqdm(train_loader, desc=f"Training epoch {epoch}", disable=rank>0, colour="blue", ncols=150), dict=metrics, key="timing/train/fetch"):
+            if single:
+                batch["source_ids"] = batch["source_ids"].to(model.device)
+                batch["source_mask"] = batch["source_mask"].to(model.device)
+                batch["target_ids"] = batch["target_ids"].to(model.device)
+            with timing(dict=metrics, key="timing/train/zerograd"):
+                optimizer.zero_grad()
+            if optim == 'adamw' or single:
+                with timing(dict=metrics, key="timing/train/forward"):
+                    loss = model(input_ids=batch["source_ids"],attention_mask=batch["source_mask"],labels=batch["target_ids"] )["loss"]
+                with timing(dict=metrics, key="timing/train/backward"):
+                    loss.backward()
             else:
                 with model.no_sync(): # Disable gradient replication for the backward pass
-                    loss = model(input_ids=batch["source_ids"],attention_mask=batch["source_mask"],labels=batch["target_ids"] )["loss"]
-                    loss.backward()
-            optimizer.step()
+                    with timing(dict=metrics, key="timing/train/forward"):
+                        loss = model(input_ids=batch["source_ids"],attention_mask=batch["source_mask"],labels=batch["target_ids"] )["loss"]
+                    with timing(dict=metrics, key="timing/train/backward"):
+                        loss.backward()
+            with timing(dict=metrics, key="timing/train/optim"):
+                optimizer.step()
             loss_samples[0] += loss.item()
             loss_samples[1] += len(batch)
-            aimrun.track({'train/loss': loss.item()})
+            with timing(dict=metrics, key="timing/train/track"):
+                metrics.update({'train/loss': loss.item()})
+                aimrun.track(metrics)
         # print training statistics
-        dist.all_reduce(loss_samples, op=dist.ReduceOp.SUM)
+        if not single:
+            dist.all_reduce(loss_samples, op=dist.ReduceOp.SUM)
         if rank == 0:
             train_loss = loss_samples[0] / loss_samples[1]
             print(f"Epoch {epoch} training loss  : {train_loss:.4f}")
@@ -73,23 +90,33 @@ def train(epochs, optim, model, train_loader, val_loader, optimizer, scheduler, 
         model.eval()
         loss_samples.zero_()
         with torch.no_grad():
-            for batch in tqdm(val_loader, desc=f"Validating after epoch {epoch}", disable=rank>0, colour="green", ncols=150):
-                loss = model(input_ids=batch["source_ids"],attention_mask=batch["source_mask"],labels=batch["target_ids"])["loss"]
+            for batch in timing_iterator(iterable=tqdm(val_loader, desc=f"Validating after epoch {epoch}", disable=rank>0, colour="green", ncols=150), dict=metrics, key='timing/val/fetch'):
+                if single:
+                    batch["source_ids"] = batch["source_ids"].to(model.device)
+                    batch["source_mask"] = batch["source_mask"].to(model.device)
+                    batch["target_ids"] = batch["target_ids"].to(model.device)
+                with timing(dict=metrics, key='timing/val/forward'):
+                    loss = model(input_ids=batch["source_ids"],attention_mask=batch["source_mask"],labels=batch["target_ids"])["loss"]
                 loss_samples[0] += loss.item()
                 loss_samples[1] += len(batch)
-                aimrun.track({'val/loss': loss.item()})
+                with timing(dict=metrics, key='timing/val/track'):
+                    metrics.update({'val/loss': loss.item()})
+                    aimrun.track(metrics)
         # print validation statistics
-        dist.all_reduce(loss_samples, op=dist.ReduceOp.SUM)
+        if not single:
+            dist.all_reduce(loss_samples, op=dist.ReduceOp.SUM)
         if rank == 0:
             val_loss = loss_samples[0] / loss_samples[1]
             print(f"Epoch {epoch} validation Loss: {val_loss:.4f}")
             aimrun.track({'epoch/val/loss': val_loss}, step=epoch)
         scheduler.step()
+    import json
+    print(json.dumps(metrics, indent=2))
     dist.barrier()
     dist.destroy_process_group()
     aimrun.close()
 
-def setup(batch_size, optim, compression_topk, compression_chunk, model, replicate_every):
+def setup(batch_size, optim, compression_topk, compression_chunk, model, replicate_every, device, single):
     torch.manual_seed(42)
     # prepare model
     tokenizer =  T5Tokenizer.from_pretrained(model, legacy=False)
@@ -98,15 +125,18 @@ def setup(batch_size, optim, compression_topk, compression_chunk, model, replica
     train_test_split = load_dataset("gursi26/wikihow-cleaned", split="train").train_test_split(test_size=0.2)
     train_dataset = WikiHow(tokenizer, train_test_split['train'], num_samples=15000)
     val_dataset = WikiHow(tokenizer, train_test_split['test'], num_samples=3000)
-    #dist.init_process_group()
     train_sampler = DistributedSampler(train_dataset, shuffle=True)
     train_loader = DataLoader(train_dataset, batch_size=batch_size, sampler=train_sampler)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, sampler=DistributedSampler(val_dataset))
     # prepare distributed training
-    torch.cuda.set_device(int(os.environ['LOCAL_RANK']))
+    if device == 'cuda':
+        torch.cuda.set_device(int(os.environ['LOCAL_RANK']))
     auto_wrap_policy = functools.partial(transformer_auto_wrap_policy, transformer_layer_cls={T5Block})
     mixed_precision = MixedPrecision(param_dtype=torch.bfloat16, reduce_dtype=torch.bfloat16, buffer_dtype=torch.bfloat16) if torch.cuda.is_bf16_supported() else None
-    if optim.startswith('deto-'):
+    if single:
+        model = model.to(device)
+        optimizer = AdamW(model.parameters(), lr=1e-3, weight_decay=0.)
+    elif optim.startswith('deto-'):
         if optim == 'deto-demo':
             replicator = DeMoReplicator(compression_topk=compression_topk, compression_chunk=compression_chunk)
         elif optim == 'deto-full':
