@@ -27,7 +27,8 @@ from transformers.models.t5.modeling_t5 import T5Block
 @click.option('--model', default='google-t5/t5-small', type=click.Choice(['google-t5/t5-small', 'google-t5/t5-base', 'google-t5/t5-large']))
 @click.option('--replicate-every', default=1)
 @click.option('--device', type=click.Choice(['cpu', 'cuda', 'mps']), default='cuda')
-def main(batch_size, epochs, optim, compression_topk, compression_chunk, model, replicate_every, device):
+@click.option('--shards', default=None, type=int, help="Number of shards per replication group (default: number of GPUs per node)")
+def main(batch_size, epochs, optim, compression_topk, compression_chunk, model, replicate_every, device, shards):
     rank, nnodes, gpus = int(os.environ['RANK']), int(os.environ['NNODES']), int(os.environ['GPUS'])
     aimrun.init(repo='.', experiment='t5', args={
         'batch_size': batch_size,
@@ -42,7 +43,7 @@ def main(batch_size, epochs, optim, compression_topk, compression_chunk, model, 
     if rank == 0:
         print(aimrun.get_runs()[0].hash)
     single = device in ('cpu', 'mps') or (device == 'cuda' and nnodes == gpus == 1)
-    model_and_co = setup(batch_size, optim, compression_topk, compression_chunk, model, replicate_every, device, single)
+    model_and_co = setup(batch_size, optim, compression_topk, compression_chunk, model, replicate_every, device, single, shards)
     train(epochs, optim, single, *model_and_co)
 
 def train(epochs, optim, single, model, train_loader, val_loader, optimizer, scheduler, train_sampler):
@@ -114,7 +115,7 @@ def train(epochs, optim, single, model, train_loader, val_loader, optimizer, sch
     dist.destroy_process_group()
     aimrun.close()
 
-def setup(batch_size, optim, compression_topk, compression_chunk, model, replicate_every, device, single):
+def setup(batch_size, optim, compression_topk, compression_chunk, model, replicate_every, device, single, shards):
     torch.manual_seed(42)
     # prepare model
     tokenizer =  T5Tokenizer.from_pretrained(model, legacy=False)
@@ -141,7 +142,7 @@ def setup(batch_size, optim, compression_topk, compression_chunk, model, replica
             replicator = FullReplicator()
         else:
             replicator = NoReplicator()
-        model, optimizer = prepare_detonation(model, replicator, fsdp_kwargs={"auto_wrap_policy": auto_wrap_policy, "mixed_precision": mixed_precision}, replicate_every=replicate_every)
+        model, optimizer = prepare_detonation(model, replicator, fsdp_kwargs={"auto_wrap_policy": auto_wrap_policy, "mixed_precision": mixed_precision}, replicate_every=replicate_every, sharding_group_size=shards)
     else:
         model = FSDP(model, auto_wrap_policy=auto_wrap_policy, mixed_precision=mixed_precision, device_id=int(os.environ['LOCAL_RANK']), sharding_strategy=ShardingStrategy.HYBRID_SHARD)
         optimizer = AdamW(model.parameters(), lr=1e-3, weight_decay=0.)
