@@ -4,9 +4,10 @@ build-backend = "hatchling.build"
 
 [project]
 name = "detonation"
-version = "0.2.1"
+version = "0.2.2"
 authors = [
-  { name = "Peter Schneider-Kamp" }
+  { name = "Peter Schneider-Kamp" },
+  { name = "Mogens Henrik From" }
 ]
 
 description = "Decouple Torch Network-Aware Training on Interlinked Online Nodes (DeToNATION)"

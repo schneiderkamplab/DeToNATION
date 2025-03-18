@@ -1,5 +1,7 @@
 # Decoupled Torch Network-Aware Training on Interlinked Online Nodes (DeToNATION)
 
+This code currently implements the results described in [FlexDeMo: Decoupled Momentum Optimization for Fully and Hybrid Sharded Training](https://arxiv.org/abs/2502.06728). An implementation to run all experiments from the paper is found in the benchmarks folder.
+
 ## Installation
 Installation from PyPI:
 ```
@@ -19,6 +21,13 @@ There is a a full example for language model training using FlexDeMo in the exam
 examples/t5/README.md
 ```
 This example demonstrates the use of the `prepare_detonation` function for obtaining a distributed model and optimizer.
+
+## Benchmarks
+There is a a full benchmarking example for language model training using FlexDeMo in the benchmarks folder. Please refer to the documentation:
+```
+benchmarks/t5/README.md
+```
+This benchmarking example demonstrates the use of the `prepare_detonation` function for obtaining a distributed model and optimizer, and uses aim and mltiming to track model parameters and performance.
 
 ## Usage
 The direct usage of DeToNATION without using `prepare_detonation` requires three elements as exemplified below for the FlexDeMo optimizer, i.e., DeToNATION with node-based hybrid sharding using DeMo replication.
