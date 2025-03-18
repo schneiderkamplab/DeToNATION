@@ -1,5 +1,5 @@
 ## T5 training
-Run the T5 example with FlexDeMo for text summarization.
+Run the T5 benchmarking with FlexDeMo for text summarization.
 
 ## Install the requirements
 ```
