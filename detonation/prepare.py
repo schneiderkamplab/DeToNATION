@@ -42,7 +42,7 @@ def prepare_detonation(
             replication_group_size = world_size // sharding_group_size
         mesh_2d = init_device_mesh(
             device_type="cuda",
-            mesh_shape=(sharding_group_size, replication_group_size),
+            mesh_shape=(replication_group_size, sharding_group_size),
         )
         sharding_parallel_group = mesh_2d.get_group(1)
         replication_parallel_group = mesh_2d.get_group(0)
