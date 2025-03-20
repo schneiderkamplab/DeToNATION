@@ -43,11 +43,6 @@ class DeToNATION():
             optim_class = getattr(torch.optim, optim_class)
         self._optimizer = optim_class(
             params,
-            foreach=False,
-            momentum=0.0,
-            dampening=0.0,
-            nesterov=False,
-            maximize=False,
             weight_decay=0.0,
             **kwargs,
         )
@@ -70,7 +65,8 @@ class DeToNATION():
         for replication_parallel_group in self.replication_parallel_groups:
             if dist.get_world_size(replication_parallel_group) == 0:
                 raise ValueError("Replication world size cannot be zero")
-
+        if optim_class.__name__ == "AdamW" and any(isinstance(replicator, DeMoReplicator) for replicator in self.replicators):
+            raise ValueError("AdamW optimizer cannot be used with DeMo replication")
         self.state["detonation_step"] = 0
         for replicator, replication_parallel_group in zip(self.replicators, self.replication_parallel_groups):
             replicator.init(self, replication_parallel_group=replication_parallel_group)
