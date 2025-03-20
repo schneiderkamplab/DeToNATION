@@ -147,7 +147,7 @@ def setup(batch_size, optim, optim_class, compression_topk, compression_chunk, m
     else:
         model = FSDP(model, auto_wrap_policy=auto_wrap_policy, mixed_precision=mixed_precision, device_id=int(os.environ['LOCAL_RANK']), sharding_strategy=ShardingStrategy.HYBRID_SHARD)
         optimizer = AdamW(model.parameters(), lr=1e-3, weight_decay=0.)
-    optim = optimizer.optim if hasattr(optimizer, "optim") else optimizer
+    optim = optimizer._optimizer if hasattr(optimizer, "_optimizer") else optimizer
     scheduler = StepLR(optim, step_size=1, gamma=0.85)
     return model, train_loader, val_loader, optimizer, scheduler, train_sampler
 
