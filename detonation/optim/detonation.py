@@ -24,11 +24,12 @@ from ..repl import DeMoReplicator, Replicator
 
 __all__ = ["DeToNATION"]
 
-class DeToNATION(torch.optim.SGD):
+class DeToNATION():
 
     def __init__(
         self,
         params,
+        optim_class: torch.optim.Optimizer | str = torch.optim.SGD,
         weight_decay: float = 0.0,
         sign: bool = True,
         sharding_parallel_group: dist.ProcessGroup | None = None,
@@ -38,7 +39,9 @@ class DeToNATION(torch.optim.SGD):
         skip_every: int | List[int] | None = None,
         **kwargs,
     ):
-        super().__init__(
+        if isinstance(optim_class, str):
+            optim_class = getattr(torch.optim, optim_class)
+        self.optim = optim_class(
             params,
             foreach=False,
             momentum=0.0,
@@ -63,7 +66,7 @@ class DeToNATION(torch.optim.SGD):
             if dist.get_world_size(replication_parallel_group) == 0:
                 raise ValueError("Replication world size cannot be zero")
 
-        self.state["detonation_step"] = 0
+        self.optim.state["detonation_step"] = 0
         for replicator in self.replicators:
             replicator.init(self)
 
@@ -89,7 +92,7 @@ class DeToNATION(torch.optim.SGD):
 
     @torch.no_grad()
     def step(self, closure: Callable | None = None):
-        self.state["detonation_step"] += 1
+        self.optim.state["detonation_step"] += 1
 
         # Any step-wise initialization needed by the replicator
         for replicator in self.replicators:
@@ -113,13 +116,13 @@ class DeToNATION(torch.optim.SGD):
                 # Replicating the gradient if needed
                 for replicate_every, skip_every, replicator in zip(self.replicate_everys, self.skip_everys, self.replicators):
                     if (
-                        (self.state["detonation_step"] % replicate_every == 0) and
-                        (skip_every is None or (self.state["detonation_step"] % skip_every != 0))
+                        (self.optim.state["detonation_step"] % replicate_every == 0) and
+                        (skip_every is None or (self.optim.state["detonation_step"] % skip_every != 0))
                     ):
                         new_grad = replicator.replicate(
                             sharded_grad=sharded_grad,
                             param=param,
-                            param_state_dict=self.state[param],
+                            param_state_dict=self.optim.state[param],
                             param_group=group,
                         )
                 else:
@@ -131,10 +134,13 @@ class DeToNATION(torch.optim.SGD):
                     param.grad.sign_()
 
         # SGD step
-        result = super().step(closure)
+        result = self.optim.step(closure)
 
         # Any step-wise finalization needed by the replicator
         for replicator in self.replicators:
             replicator.post_step()
 
         return result
+
+    def zero_grad(self):
+        self.optim.zero_grad()
