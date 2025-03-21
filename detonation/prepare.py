@@ -8,13 +8,13 @@ from torch.distributed.fsdp import (
 from typing import Optional, Tuple
 
 from .optim import DeToNATION
-from .repl import Replicator
+from .repl import Replicator, DeMoReplicator
 
 __all__ = ["prepare_detonation"]
 
 def prepare_detonation(
     model: torch.nn.Module,
-    replicator: Optional[Replicator] = None,
+    replicator: Optional[Replicator] = DeMoReplicator(),
     sharding_group_size: Optional[int] = None,
     replication_group_size: Optional[int] = None,
     sharding_parallel_group: Optional[torch.distributed.ProcessGroup] = None,

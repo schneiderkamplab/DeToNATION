@@ -10,7 +10,11 @@ class Replicator(ABC):
     :class:`DeToNATION` optimizer for replicating gradients across replication groups (typically nodes).
     """
 
-    def init(self, optim: torch.optim.Optimizer):
+    def init(
+        self,
+        optim: torch.optim.Optimizer,
+        replication_parallel_group: torch.distributed.ProcessGroup | None = None,
+    ):
         """
         Initialize the replicator.
         """

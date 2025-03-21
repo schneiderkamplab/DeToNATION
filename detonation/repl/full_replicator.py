@@ -8,8 +8,12 @@ __all__ = ["FullReplicator"]
 
 class FullReplicator(Replicator):
 
-    def init(self, optim: torch.optim.Optimizer):
-        self.replication_parallel_group = optim.replication_parallel_group
+    def init(
+            self,
+            optim: torch.optim.Optimizer,
+            replication_parallel_group: dist.ProcessGroup | None = None,
+        ):
+        self.replication_parallel_group = optim.replication_parallel_group if replication_parallel_group is None else replication_parallel_group
 
     def replicate(
         self,

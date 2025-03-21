@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "detonation"
-version = "0.2.2"
+version = "0.3.0"
 authors = [
   { name = "Peter Schneider-Kamp" },
   { name = "Mogens Henrik From" }
@@ -31,6 +31,7 @@ dependencies = [
 
 [tool.hatch.build]
 include = [
+    'benchmarks',
     'detonation',
     'examples',
     'README.md',

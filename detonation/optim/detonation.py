@@ -9,65 +9,67 @@ In an exisiting codebase that uses PyTorch and one of these sharding strategies,
 `torch.distributed.DistributedDataParallel.no_sync` to disable external gradient synchronization.
 See https://pytorch.org/docs/stable/generated/torch.nn.parallel.DistributedDataParallel.html#torch.nn.parallel.DistributedDataParallel.no_sync
 TODO:
-* integrate automatic testing with a small distributed test suite
-* create prepare_model function that wraps model and auto-detects policy, if none is given in the constructor
-  according to the model's structure
-* compute transmitted data for full and no replication (and make that a part of the DeToNATION)
+* auto-detect policy if none is given in prepare_detonation according to the model's structure
+* compute transmitted data for full and no replication (and make that a part of the DeToNATION?)
 * profiling of GPU, CPU, network, and wall time usage (optimize DeMoReplicator? stream replications instead of waiting?)
-* implement replicate-every
 """
 
 import torch
 import torch.distributed as dist
 import torch.fft
 import torch.nn.functional as F
-from typing import Callable, Optional
+from typing import Callable, List
 
 from ..repl import DeMoReplicator, Replicator
 
 __all__ = ["DeToNATION"]
 
-class DeToNATION(torch.optim.SGD):
+class DeToNATION():
 
     def __init__(
         self,
         params,
+        optim_class: torch.optim.Optimizer | str = torch.optim.SGD,
         weight_decay: float = 0.0,
         sign: bool = True,
-        sharding_parallel_group: Optional[dist.ProcessGroup] = None,
-        replication_parallel_group: Optional[dist.ProcessGroup] = None,
-        replicator: Replicator = DeMoReplicator(),
-        replicate_every: int = 1,
+        sharding_parallel_group: dist.ProcessGroup | None = None,
+        replication_parallel_group: dist.ProcessGroup | List[dist.ProcessGroup] | None = None,
+        replicator: Replicator | List[Replicator] = DeMoReplicator(),
+        replicate_every: int | List[int] = 1,
+        skip_every: int | List[int] | None = None,
         **kwargs,
     ):
-        super().__init__(
+        if isinstance(optim_class, str):
+            optim_class = getattr(torch.optim, optim_class)
+        self._optimizer = optim_class(
             params,
-            foreach=False,
-            momentum=0.0,
-            dampening=0.0,
-            nesterov=False,
-            maximize=False,
             weight_decay=0.0,
             **kwargs,
         )
+        self.state = self._optimizer.state
+        self.param_groups = self._optimizer.param_groups
+        self.zero_grad = self._optimizer.zero_grad
+        self.__bases__ = (self._optimizer.__class__,)
 
         self.weight_decay = weight_decay
         self.sign = sign
         self.sharding_parallel_group = sharding_parallel_group # intra-node communication 
-        self.replication_parallel_group = replication_parallel_group # inter-node communication
-        self.replicator = replicator
-        self.replicate_every = replicate_every
+        self.replication_parallel_groups = replication_parallel_group if isinstance(replication_parallel_group, list) else [replication_parallel_group] # inter-node communication
+        self.replicators = replicator if isinstance(replicator, list) else [replicator]
+        self.replicate_everys = replicate_every if isinstance(replicate_every, list) else [replicate_every]*len(self.replicators)
+        self.skip_everys = [None]*len(self.replicators) if skip_every is None else (skip_every if isinstance(skip_every, list) else [skip_every])
 
         self._sharding_world_size = dist.get_world_size(self.sharding_parallel_group)
-        self._replication_world_size = dist.get_world_size(self.replication_parallel_group)
-
         if self._sharding_world_size == 0:
             raise ValueError("Sharding world size cannot be zero")
-        if self._replication_world_size == 0:
-            raise ValueError("Replication world size cannot be zero")
-
+        for replication_parallel_group in self.replication_parallel_groups:
+            if dist.get_world_size(replication_parallel_group) == 0:
+                raise ValueError("Replication world size cannot be zero")
+        if optim_class.__name__ == "AdamW" and any(isinstance(replicator, DeMoReplicator) for replicator in self.replicators):
+            raise ValueError("AdamW optimizer cannot be used with DeMo replication")
         self.state["detonation_step"] = 0
-        self.replicator.init(self)
+        for replicator, replication_parallel_group in zip(self.replicators, self.replication_parallel_groups):
+            replicator.init(self, replication_parallel_group=replication_parallel_group)
 
     def _grad_reduce_scatter(self, grad: torch.Tensor):
         # Do not reduce_scatter if the gradient is not sharded
@@ -94,7 +96,8 @@ class DeToNATION(torch.optim.SGD):
         self.state["detonation_step"] += 1
 
         # Any step-wise initialization needed by the replicator
-        self.replicator.pre_step()
+        for replicator in self.replicators:
+            replicator.pre_step()
 
         for group in self.param_groups:
             lr = group["lr"]
@@ -112,13 +115,17 @@ class DeToNATION(torch.optim.SGD):
                     param.data.mul_(1.0 - lr * self.weight_decay)
 
                 # Replicating the gradient if needed
-                if self.state["detonation_step"] % self.replicate_every == 0:
-                    new_grad = self.replicator.replicate(
-                        sharded_grad=sharded_grad,
-                        param=param,
-                        param_state_dict=self.state[param],
-                        param_group=group,
-                    )
+                for replicate_every, skip_every, replicator in zip(self.replicate_everys, self.skip_everys, self.replicators):
+                    if (
+                        (self.state["detonation_step"] % replicate_every == 0) and
+                        (skip_every is None or (self.state["detonation_step"] % skip_every != 0))
+                    ):
+                        new_grad = replicator.replicate(
+                            sharded_grad=sharded_grad,
+                            param=param,
+                            param_state_dict=self.state[param],
+                            param_group=group,
+                        )
                 else:
                     new_grad = sharded_grad.to(param.device).to(param.dtype)
                 param.grad = new_grad
@@ -128,9 +135,10 @@ class DeToNATION(torch.optim.SGD):
                     param.grad.sign_()
 
         # SGD step
-        result = super().step(closure)
+        result = self._optimizer.step(closure)
 
         # Any step-wise finalization needed by the replicator
-        self.replicator.post_step()
+        for replicator in self.replicators:
+            replicator.post_step()
 
         return result
