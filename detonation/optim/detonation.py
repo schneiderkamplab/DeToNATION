@@ -24,11 +24,12 @@ from ..repl import DeMoReplicator, Replicator
 
 __all__ = ["DeToNATION"]
 
-class DeToNATION(torch.optim.SGD):
+class DeToNATION():
 
     def __init__(
         self,
         params,
+        optim_class: torch.optim.Optimizer | str = torch.optim.SGD,
         weight_decay: float = 0.0,
         sign: bool = True,
         sharding_parallel_group: dist.ProcessGroup | None = None,
@@ -38,23 +39,25 @@ class DeToNATION(torch.optim.SGD):
         skip_every: int | List[int] | None = None,
         **kwargs,
     ):
-        super().__init__(
+        if isinstance(optim_class, str):
+            optim_class = getattr(torch.optim, optim_class)
+        self._optimizer = optim_class(
             params,
-            foreach=False,
-            momentum=0.0,
-            dampening=0.0,
-            nesterov=False,
-            maximize=False,
             weight_decay=0.0,
             **kwargs,
         )
+        self.state = self._optimizer.state
+        self.param_groups = self._optimizer.param_groups
+        self.zero_grad = self._optimizer.zero_grad
+        self.__bases__ = (self._optimizer.__class__,)
+
         self.weight_decay = weight_decay
         self.sign = sign
         self.sharding_parallel_group = sharding_parallel_group # intra-node communication 
         self.replication_parallel_groups = replication_parallel_group if isinstance(replication_parallel_group, list) else [replication_parallel_group] # inter-node communication
         self.replicators = replicator if isinstance(replicator, list) else [replicator]
-        self.replicate_everys = replicate_every if isinstance(replicate_every, list) else [replicate_every]
-        self.skip_everys = None if skip_every is None else (skip_every if isinstance(skip_every, list) else [skip_every])
+        self.replicate_everys = replicate_every if isinstance(replicate_every, list) else [replicate_every]*len(self.replicators)
+        self.skip_everys = [None]*len(self.replicators) if skip_every is None else (skip_every if isinstance(skip_every, list) else [skip_every])
 
         self._sharding_world_size = dist.get_world_size(self.sharding_parallel_group)
         if self._sharding_world_size == 0:
@@ -62,10 +65,11 @@ class DeToNATION(torch.optim.SGD):
         for replication_parallel_group in self.replication_parallel_groups:
             if dist.get_world_size(replication_parallel_group) == 0:
                 raise ValueError("Replication world size cannot be zero")
-
+        if optim_class.__name__ == "AdamW" and any(isinstance(replicator, DeMoReplicator) for replicator in self.replicators):
+            raise ValueError("AdamW optimizer cannot be used with DeMo replication")
         self.state["detonation_step"] = 0
-        for replicator in self.replicators:
-            replicator.init(self)
+        for replicator, replication_parallel_group in zip(self.replicators, self.replication_parallel_groups):
+            replicator.init(self, replication_parallel_group=replication_parallel_group)
 
     def _grad_reduce_scatter(self, grad: torch.Tensor):
         # Do not reduce_scatter if the gradient is not sharded
@@ -131,7 +135,7 @@ class DeToNATION(torch.optim.SGD):
                     param.grad.sign_()
 
         # SGD step
-        result = super().step(closure)
+        result = self._optimizer.step(closure)
 
         # Any step-wise finalization needed by the replicator
         for replicator in self.replicators:
