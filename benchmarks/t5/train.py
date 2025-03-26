@@ -82,6 +82,7 @@ def train(epochs, optim, single, model, train_loader, val_loader, optimizer, sch
             with timing(dict=metrics, key="timing/train/track"):
                 metrics.update({'train/loss': loss.item()})
                 aimrun.track(metrics)
+                metrics.clear()
         # print training statistics
         if not single:
             dist.all_reduce(loss_samples, op=dist.ReduceOp.SUM)
@@ -92,6 +93,7 @@ def train(epochs, optim, single, model, train_loader, val_loader, optimizer, sch
         # validate
         model.eval()
         loss_samples.zero_()
+        metrics.clear()
         with torch.no_grad():
             for batch in timing_iterator(iterable=tqdm(val_loader, desc=f"Validating after epoch {epoch}", disable=rank>0, colour="green", ncols=150), dict=metrics, key='timing/val/fetch'):
                 if single:
@@ -105,6 +107,7 @@ def train(epochs, optim, single, model, train_loader, val_loader, optimizer, sch
                 with timing(dict=metrics, key='timing/val/track'):
                     metrics.update({'val/loss': loss.item()})
                     aimrun.track(metrics)
+                    metrics.clear()
         # print validation statistics
         if not single:
             dist.all_reduce(loss_samples, op=dist.ReduceOp.SUM)
