@@ -88,14 +88,6 @@ class RandomReplicator(Replicator):
             num_selected = int(delta.size(0) * self.compression_rate)
             # rand_scores = torch.rand(delta.size(0), generator=self.random_state, device=param.device)
             # _, selected_rows = torch.topk(rand_scores, num_selected, largest=False)
-            if dist.get_rank() == 0:
-                print(f"num_selected: {num_selected}")
-                print(f"max_size: {self.max_size}")
-                print(f"permutation size: {self.permutation.size()}")
-                print(f"delta size: {delta.size()}")
-                print(f"param size: {param.size()}")
-                print(f"sharded_grad size: {sharded_grad.size()}")
-                1/0
             selected_rows = self.permutation[:num_selected]
             compressed_grad = delta[selected_rows]
             dist.barrier()
