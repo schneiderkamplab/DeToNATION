@@ -87,7 +87,8 @@ class RandomReplicator(Replicator):
         # Compress delta
         with timing(dict=step_metrics, key="train/optim/replicate/encode"):
             num_selected = int(delta.size(0) * self.compression_rate)
-            _, selected_rows = torch.topk(self.rand_scores, num_selected, largest=False)
+            rand_scores = self.rand_scores.to(device=param.device)
+            _, selected_rows = torch.topk(rand_scores, num_selected, largest=False)
             compressed_grad = delta[selected_rows]
             dist.barrier()
 
