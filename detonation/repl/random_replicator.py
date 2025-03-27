@@ -1,11 +1,8 @@
+from mltiming import timing
 import torch
 import torch.distributed as dist
 import torch.fft
-
 from typing import Dict, Any
-
-from mltiming import timing
-import numpy as np
 
 from .replicator import Replicator
 
@@ -48,7 +45,7 @@ class RandomReplicator(Replicator):
     def pre_step(self):
         self.data_transmit = 0
         self.data_receive = 0
-        self.permutations = {size: torch.randperm(size, generator=self.random_state)[int(self.compression_rate * size)] for size in self.sizes}
+        self.permutations = {size: torch.randperm(size, generator=self.random_state, device=self.random_state.device)[int(self.compression_rate * size)] for size in self.sizes}
 
     def post_step(self):
         self.data_transmitted.append(self.data_transmit)

@@ -1,10 +1,8 @@
+from mltiming import timing
 import torch
 import torch.distributed as dist
 import torch.fft
-
 from typing import Dict, Any
-
-from mltiming import timing
 
 from .replicator import Replicator
 from ..util import DCTCompress, DCTTransform
