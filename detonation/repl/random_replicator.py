@@ -33,7 +33,8 @@ class RandomReplicator(Replicator):
             optim: torch.optim.Optimizer,
             replication_parallel_group: dist.ProcessGroup | None = None,
         ):
-        self.random_state = torch.Generator().manual_seed(self.seed)
+        device = optim.param_groups[0]["params"][0].device
+        self.random_state = torch.Generator().manual_seed(self.seed, device=device)
         for group in optim.param_groups:
             for p in group["params"]:
                 if p.requires_grad:
