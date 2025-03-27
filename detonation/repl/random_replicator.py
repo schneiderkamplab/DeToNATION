@@ -48,11 +48,11 @@ class RandomReplicator(Replicator):
     def pre_step(self):
         self.data_transmit = 0
         self.data_receive = 0
+        self.rand_scores = torch.rand(self.max_size, generator=self.random_state, device=self.random_state.device)
 
     def post_step(self):
         self.data_transmitted.append(self.data_transmit)
         self.data_received.append(self.data_receive)
-        self.rand_scores = torch.rand(self.max_size, generator=self.random_state, device=self.random_state.device)
 
     def replicate(
         self,
