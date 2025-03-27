@@ -62,7 +62,7 @@ class RandomReplicator(Replicator):
         # No replication if compression rate is 0
         with timing(dict=step_metrics, key="train/optim/replicate/noreplication"):
             if self.compression_rate == 0:
-                return sharded_grad.to(param.device).to(param.dtype)
+                return sharded_grad.to(device=param.device, dtype=param.dtype)
             dist.barrier()
 
         # Decay delta and add the gradient
@@ -92,7 +92,9 @@ class RandomReplicator(Replicator):
 
         # Remove compressed gradient from delta
         with timing(dict=step_metrics, key="train/optim/replicate/remove"):
-            delta[selected_rows] = 0
+            mask = torch.zeros(delta.size(0), dtype=torch.bool, device=param.device)
+            mask[selected_rows] = True
+            delta.mul_(~mask.unsqueeze(1))
             dist.barrier()
 
         # Average the compressed gradient
@@ -108,7 +110,6 @@ class RandomReplicator(Replicator):
 
         # Decode new gradient from all nodes
         with timing(dict=step_metrics, key="train/optim/replicate/decode"):
-            new_grad = torch.zeros_like(delta, device=param.device)
-            new_grad[selected_rows] = compressed_grad
+            new_grad = torch.where(mask.unsqueeze(1), compressed_grad, torch.zeros_like(delta))
             dist.barrier()
         return new_grad
