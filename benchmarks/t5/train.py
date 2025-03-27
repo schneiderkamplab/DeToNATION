@@ -3,6 +3,7 @@ import click
 from datasets import load_dataset
 from detonation import DeMoReplicator, FullReplicator, NoReplicator, prepare_detonation
 import functools
+import json
 from mltiming import timing_iterator, timing
 import os
 import torch
@@ -58,31 +59,47 @@ def train(epochs, optim, single, model, train_loader, val_loader, optimizer, sch
         loss_samples = torch.zeros(2).to(model.device)
         metrics = {}
         for batch in timing_iterator(iterable=tqdm(train_loader, desc=f"Training epoch {epoch}", disable=rank>0, colour="blue", ncols=150), dict=metrics, key="timing/train/fetch"):
-            if single:
-                batch["source_ids"] = batch["source_ids"].to(model.device)
-                batch["source_mask"] = batch["source_mask"].to(model.device)
-                batch["target_ids"] = batch["target_ids"].to(model.device)
+            with timing(dict=metrics, key="timing/train/togpu"):
+                if single:
+                    batch["source_ids"] = batch["source_ids"].to(model.device)
+                    batch["source_mask"] = batch["source_mask"].to(model.device)
+                    batch["target_ids"] = batch["target_ids"].to(model.device)
+                    dist.barrier()
             with timing(dict=metrics, key="timing/train/zerograd"):
                 optimizer.zero_grad()
-            if optim == 'adamw' or single:
-                with timing(dict=metrics, key="timing/train/forward"):
-                    loss = model(input_ids=batch["source_ids"],attention_mask=batch["source_mask"],labels=batch["target_ids"] )["loss"]
-                with timing(dict=metrics, key="timing/train/backward"):
-                    loss.backward()
-            else:
-                with model.no_sync(): # Disable gradient replication for the backward pass
+                dist.barrier()
+            with timing(dict=metrics, key="timing/train/forwardbackward"):
+                if optim == 'adamw' or single:
                     with timing(dict=metrics, key="timing/train/forward"):
                         loss = model(input_ids=batch["source_ids"],attention_mask=batch["source_mask"],labels=batch["target_ids"] )["loss"]
+                        dist.barrier()
                     with timing(dict=metrics, key="timing/train/backward"):
                         loss.backward()
+                        dist.barrier()
+                else:
+                    with model.no_sync(): # Disable gradient replication for the backward pass
+                        with timing(dict=metrics, key="timing/train/forward"):
+                            loss = model(input_ids=batch["source_ids"],attention_mask=batch["source_mask"],labels=batch["target_ids"] )["loss"]
+                            dist.barrier()
+                        with timing(dict=metrics, key="timing/train/backward"):
+                            loss.backward()
+                            dist.barrier()
             with timing(dict=metrics, key="timing/train/optim"):
-                optimizer.step()
-            loss_samples[0] += loss.item()
-            loss_samples[1] += len(batch)
+                optimizer.step(step_metrics=metrics)
+                dist.barrier()
+            with timing(dict=metrics, key="timing/train/getloss"):
+                loss_samples[0] += loss.item()
+                loss_samples[1] += len(batch)
+                dist.barrier()
             with timing(dict=metrics, key="timing/train/track"):
                 metrics.update({'train/loss': loss.item()})
                 aimrun.track(metrics)
-                metrics.clear()
+                dist.barrier()
+        print(json.dumps(metrics, indent=2))
+        metrics.clear()
+        if hasattr(optimizer.replicators[0], "data_transmitted"):
+            print(sum(optimizer.replicators[0].data_transmitted)/2**30)
+            print(sum(optimizer.replicators[0].data_received)/2**30)
         # print training statistics
         if not single:
             dist.all_reduce(loss_samples, op=dist.ReduceOp.SUM)
