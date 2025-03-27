@@ -4,6 +4,8 @@ import torch.fft
 
 from typing import Dict, Any
 
+from mltiming import timing
+
 from .replicator import Replicator
 
 __all__ = ["RandomReplicator"]
@@ -54,42 +56,63 @@ class RandomReplicator(Replicator):
         param: torch.nn.Parameter,
         param_state_dict: dict,
         param_group: Dict[str, Any],
+        step_metrics: dict = {},
     ) -> torch.Tensor:
         # No replication if compression rate is 0
-        if self.compression_rate == 0:
-            return sharded_grad.to(param.device).to(param.dtype)
+        with timing(dict=step_metrics, key="train/optim/replicate/noreplication"):
+            if self.compression_rate == 0:
+                return sharded_grad.to(param.device).to(param.dtype)
+            dist.barrier()
 
         # Decay delta and add the gradient
-        delta = param_state_dict["demo_delta"]
-        if self.compression_decay != 1:
-            delta.mul_(self.compression_decay)
-        delta.add_(sharded_grad, alpha=param_group["lr"])
+        with timing(dict=step_metrics, key="train/optim/replicate/delta"):
+            delta = param_state_dict["demo_delta"]
+            if self.compression_decay != 1:
+                delta.mul_(self.compression_decay)
+            delta.add_(sharded_grad, alpha=param_group["lr"])
+            dist.barrier()
 
         # Replicating delta only if needed
-        if self._replication_world_size == 1 or self.compression_rate == 1:
-            new_grad = delta.clone()
-            delta.zero_()
-            return new_grad
+        with timing(dict=step_metrics, key="train/optim/replicate/noreplication"):
+            if self._replication_world_size == 1 or self.compression_rate == 1:
+                new_grad = delta.clone()
+                delta.zero_()
+                return new_grad
+            dist.barrier()
     
         # Compress delta
-        selected_rows = torch.randperm(delta.size(0), generator=self.random_state)[:int(self.compression_rate * delta.size(0))]
-        compressed_grad = delta[selected_rows]
+        with timing(dict=step_metrics, key="train/optim/replicate/encode"):
+            selected_rows = torch.randperm(delta.size(0), generator=self.random_state)[:int(self.compression_rate * delta.size(0))]
+            compressed_grad = delta[selected_rows]
+            dist.barrier()
+        print("sharded_grad", sharded_grad.shape)
+        print("compressed_grad", compressed_grad.shape)
 
         # Estimate transmitted delta
-        transmit_grad = torch.zeros_like(delta)
-        transmit_grad[selected_rows] = compressed_grad
+        with timing(dict=step_metrics, key="train/optim/replicate/estimate"):
+            transmit_grad = torch.zeros_like(delta)
+            transmit_grad[selected_rows] = compressed_grad
+            dist.barrier()
 
         # Remove transmitted from delta
-        delta.sub_(transmit_grad)
+        with timing(dict=step_metrics, key="train/optim/replicate/estimate"):
+            delta.sub_(transmit_grad)
+            dist.barrier()
 
         # Average the compressed gradient
-        dist.all_reduce(compressed_grad, dist.ReduceOp.AVG, group=self.replication_parallel_group)
+        with timing(dict=step_metrics, key="train/optim/replicate/communicate"):
+            dist.all_reduce(compressed_grad, dist.ReduceOp.AVG, group=self.replication_parallel_group)
+            dist.barrier()
 
         # Log I/O data size
-        self.data_transmit += compressed_grad.nbytes
-        self.data_receive += compressed_grad.nbytes
+        with timing(dict=step_metrics, key="train/optim/replicate/calculateio"):
+            self.data_transmit += compressed_grad.nbytes
+            self.data_receive += compressed_grad.nbytes
+            dist.barrier()
 
         # Decode new gradient from all nodes
-        new_grad = torch.zeros_like(delta)
-        new_grad[selected_rows] = compressed_grad
+        with timing(dict=step_metrics, key="train/optim/replicate/decode"):
+            new_grad = torch.zeros_like(delta)
+            new_grad[selected_rows] = compressed_grad
+            dist.barrier()
         return new_grad
