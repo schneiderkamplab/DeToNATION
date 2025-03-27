@@ -99,11 +99,13 @@ def train(epochs, optim, single, model, train_loader, val_loader, optimizer, sch
                 metrics.update({'train/loss': loss.item()})
                 aimrun.track(metrics)
                 dist.barrier()
-        print(json.dumps(metrics, indent=2))
+        for i, replicator in enumerate(optimizer.replicators):
+            if hasattr(replicator, "data_transmitted"):
+                metrics[f"data_transmitted_gb_{i}"] = sum(replicator.data_transmitted)/2**30
+                metrics[f"data_received_gb_{i}"] = sum(replicator.data_received)/2**30
+        if dist.get_rank() == 0:
+            print(json.dumps(metrics, indent=2))
         metrics.clear()
-        if hasattr(optimizer.replicators[0], "data_transmitted"):
-            print(sum(optimizer.replicators[0].data_transmitted)/2**30)
-            print(sum(optimizer.replicators[0].data_received)/2**30)
         # print training statistics
         if not single:
             dist.all_reduce(loss_samples, op=dist.ReduceOp.SUM)
