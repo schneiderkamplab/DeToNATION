@@ -1,7 +1,7 @@
 import aimrun
 import click
 from datasets import load_dataset
-from detonation import DeMoReplicator, FullReplicator, NoReplicator, prepare_detonation
+from detonation import DeMoReplicator, FullReplicator, NoReplicator, RandomReplicator, prepare_detonation
 import functools
 from mltiming import timing_iterator, timing
 import os
@@ -21,8 +21,9 @@ from transformers.models.t5.modeling_t5 import T5Block
 @click.command()
 @click.option('--batch-size', default=32, help='input batch size for training and validation (default: 32)')
 @click.option('--epochs', default=10, help='number of epochs to train (default: 10)')
-@click.option('--optim', default='deto-demo', type=click.Choice(['deto-demo', 'deto-full', 'deto-none', 'adamw']))
+@click.option('--optim', default='deto-demo', type=click.Choice(['deto-demo', 'deto-full', 'deto-none', 'adamw', 'deto-random']))
 @click.option('--optim-class', default='SGD', type=click.Choice(['SGD', 'AdamW']))
+@click.option('--compression-rate', default=0.1)
 @click.option('--compression-topk', default=2)
 @click.option('--compression-chunk', default=64)
 @click.option('--model', default='google-t5/t5-small', type=click.Choice(['google-t5/t5-small', 'google-t5/t5-base', 'google-t5/t5-large']))
@@ -30,7 +31,7 @@ from transformers.models.t5.modeling_t5 import T5Block
 @click.option('--skip-every', default=None, type=int)
 @click.option('--device', type=click.Choice(['cpu', 'cuda', 'mps']), default='cuda')
 @click.option('--shards', default=None, type=int, help="Number of shards per replication group (default: number of GPUs per node)")
-def main(batch_size, epochs, optim, optim_class, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards):
+def main(batch_size, epochs, optim, optim_class, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards):
     rank, nnodes, gpus = int(os.environ['RANK']), int(os.environ['NNODES']), int(os.environ['GPUS'])
     aimrun.init(repo='.', experiment='t5', args={
         'batch_size': batch_size,
@@ -45,7 +46,7 @@ def main(batch_size, epochs, optim, optim_class, compression_topk, compression_c
     if rank == 0:
         print(aimrun.get_runs()[0].hash)
     single = device in ('cpu', 'mps') or (device == 'cuda' and nnodes == gpus == 1)
-    model_and_co = setup(batch_size, optim, optim_class, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards)
+    model_and_co = setup(batch_size, optim, optim_class, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards)
     train(epochs, optim, single, *model_and_co)
 
 def train(epochs, optim, single, model, train_loader, val_loader, optimizer, scheduler, train_sampler):
@@ -120,7 +121,7 @@ def train(epochs, optim, single, model, train_loader, val_loader, optimizer, sch
     dist.destroy_process_group()
     aimrun.close()
 
-def setup(batch_size, optim, optim_class, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards):
+def setup(batch_size, optim, optim_class, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards):
     torch.manual_seed(42)
     # prepare model
     tokenizer =  T5Tokenizer.from_pretrained(model, legacy=False)
@@ -143,6 +144,8 @@ def setup(batch_size, optim, optim_class, compression_topk, compression_chunk, m
     elif optim.startswith('deto-'):
         if optim == 'deto-demo':
             replicator = DeMoReplicator(compression_topk=compression_topk, compression_chunk=compression_chunk)
+        elif optim == 'deto-random':
+            replicator = RandomReplicator(compression_rate=compression_rate)
         elif optim == 'deto-full':
             replicator = FullReplicator()
         else:
