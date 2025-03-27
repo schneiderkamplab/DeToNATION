@@ -36,6 +36,7 @@ class RandomReplicator(Replicator):
         self.random_state = torch.Generator(device=device).manual_seed(self.seed)
         self.sizes = set(p.view(-1, self.compression_chunk).size(0) for group in optim.param_groups for p in group["params"] if p.requires_grad)
         print(self.sizes)
+        1/0
         for group in optim.param_groups:
             for p in group["params"]:
                 if p.requires_grad:
