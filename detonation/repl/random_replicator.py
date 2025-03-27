@@ -84,15 +84,8 @@ class RandomReplicator(Replicator):
         # Compress delta
         with timing(dict=step_metrics, key="train/optim/replicate/encode"):
             num_selected = int(delta.size(0) * self.compression_rate)
-            def sample_gumbel(shape, device, generator, eps=1e-10):
-                u = torch.rand(shape, device=device, generator=generator)
-                return -torch.log(-torch.log(u + eps) + eps)
-            gumbel_scores = sample_gumbel(delta.size(0), param.device, self.random_state)
-            scores = delta.abs().flatten()
-            gumbel_scores *= scores
-            _, selected_rows = torch.topk(gumbel_scores, num_selected, largest=True)
-            # rand_scores = torch.rand(delta.size(0), generator=self.random_state, device=param.device)
-            # _, selected_rows = torch.topk(rand_scores, num_selected, largest=False)
+            rand_scores = torch.rand(delta.size(0), generator=self.random_state, device=param.device)
+            _, selected_rows = torch.topk(rand_scores, num_selected, largest=False)
             compressed_grad = delta[selected_rows]
             dist.barrier()
 
