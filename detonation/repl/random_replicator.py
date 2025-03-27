@@ -90,15 +90,9 @@ class RandomReplicator(Replicator):
             compressed_grad = delta[selected_rows]
             dist.barrier()
 
-        # Estimate transmitted delta
-        with timing(dict=step_metrics, key="train/optim/replicate/estimate"):
-            transmit_grad = torch.zeros_like(delta)
-            transmit_grad[selected_rows] = compressed_grad
-            dist.barrier()
-
-        # Remove transmitted from delta
-        with timing(dict=step_metrics, key="train/optim/replicate/estimate"):
-            delta.sub_(transmit_grad)
+        # Remove compressed gradient from delta
+        with timing(dict=step_metrics, key="train/optim/replicate/remove"):
+            delta[selected_rows] = 0
             dist.barrier()
 
         # Average the compressed gradient
