@@ -14,10 +14,12 @@ class RandomReplicator(Replicator):
         self,
         compression_decay: float = 0.999,
         compression_rate: float = 0.1,
+        compression_chunk: int = 64,
         seed: int = 42,
     ):
         self.compression_decay = compression_decay
         self.compression_rate = compression_rate
+        self.compression_chunk = compression_chunk
         self.seed = seed
 
         if self.compression_rate <= 0:
@@ -32,7 +34,7 @@ class RandomReplicator(Replicator):
         ):
         device = optim.param_groups[0]["params"][0].device
         self.random_state = torch.Generator(device=device).manual_seed(self.seed)
-        self.sizes = set(p.size(0) for group in optim.param_groups for p in group["params"] if p.requires_grad)
+        self.sizes = set(p.view(-1, self.compression_chunk).size(0) for group in optim.param_groups for p in group["params"] if p.requires_grad)
         for group in optim.param_groups:
             for p in group["params"]:
                 if p.requires_grad:
@@ -83,9 +85,10 @@ class RandomReplicator(Replicator):
                 delta.zero_()
                 return new_grad
             dist.barrier()
-    
+
         # Compress delta
         with timing(dict=step_metrics, key="train/optim/replicate/encode"):
+            delta = delta.view(-1, self.compression_chunk)
             selected_rows = self.permutations[delta.size(0)]
             compressed_grad = delta[selected_rows]
             dist.barrier()
@@ -112,5 +115,6 @@ class RandomReplicator(Replicator):
         with timing(dict=step_metrics, key="train/optim/replicate/decode"):
             new_grad = torch.zeros_like(delta, device=param.device)
             new_grad[selected_rows] = compressed_grad
+            new_grad = new_grad.view_as(sharded_grad)
             dist.barrier()
         return new_grad
