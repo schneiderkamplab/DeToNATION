@@ -5,6 +5,7 @@ import torch.fft
 from typing import Dict, Any
 
 from mltiming import timing
+import numpy as np
 
 from .replicator import Replicator
 
@@ -32,7 +33,8 @@ class RandomReplicator(Replicator):
             optim: torch.optim.Optimizer,
             replication_parallel_group: dist.ProcessGroup | None = None,
         ):
-        self.random_state = torch.Generator().manual_seed(self.seed)
+        # self.random_state = torch.Generator().manual_seed(self.seed)
+        self.random_state = np.random.default_rng(self.seed)
         self.max_size = max(p.size(0) for group in optim.param_groups for p in group["params"] if p.requires_grad)
         for group in optim.param_groups:
             for p in group["params"]:
@@ -46,7 +48,7 @@ class RandomReplicator(Replicator):
     def pre_step(self):
         self.data_transmit = 0
         self.data_receive = 0
-        self.permutation = torch.randperm(self.max_size, generator=self.random_state, device=self.random_state.device)
+        self.permutation = torch.tensor(self.random_state.permutation(self.max_size))
 
     def post_step(self):
         self.data_transmitted.append(self.data_transmit)
