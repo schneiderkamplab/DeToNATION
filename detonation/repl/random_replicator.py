@@ -80,12 +80,14 @@ class RandomReplicator(Replicator):
                 return new_grad
             dist.barrier()
     
+        _g = torch.Generator(device=param.device).set_state(self.random_state.get_state())
         # Compress delta
         with timing(dict=step_metrics, key="train/optim/replicate/encode"):
             self.random_state.to(param.device)
-            selected_rows = torch.randperm(delta.size(0), generator=self.random_state, device=param.device)[:int(self.compression_rate * delta.size(0))]
+            selected_rows = torch.randperm(delta.size(0), generator=_g, device=param.device)[:int(self.compression_rate * delta.size(0))]
             compressed_grad = delta[selected_rows]
             dist.barrier()
+        self.random_state.set_state(_g.get_state())
         print("sharded_grad", sharded_grad.shape)
         print("compressed_grad", compressed_grad.shape)
 
