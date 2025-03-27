@@ -108,7 +108,7 @@ class RandomReplicator(Replicator):
 
         # Decode new gradient from all nodes
         with timing(dict=step_metrics, key="train/optim/replicate/decode"):
-            new_grad = torch.zeros_like(delta)
+            new_grad = torch.zeros_like(delta, device=param.device)
             new_grad[selected_rows] = compressed_grad
             dist.barrier()
         return new_grad
