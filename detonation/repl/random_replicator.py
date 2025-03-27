@@ -32,8 +32,7 @@ class RandomReplicator(Replicator):
             optim: torch.optim.Optimizer,
             replication_parallel_group: dist.ProcessGroup | None = None,
         ):
-        device = optim.param_groups[0]["params"][0].device
-        self.random_state = torch.Generator(device=device).manual_seed(self.seed)
+        self.random_state = torch.Generator().manual_seed(self.seed)
         self.max_size = max(p.size(0) for group in optim.param_groups for p in group["params"] if p.requires_grad)
         for group in optim.param_groups:
             for p in group["params"]:
@@ -88,7 +87,7 @@ class RandomReplicator(Replicator):
             num_selected = int(delta.size(0) * self.compression_rate)
             # rand_scores = torch.rand(delta.size(0), generator=self.random_state, device=param.device)
             # _, selected_rows = torch.topk(rand_scores, num_selected, largest=False)
-            selected_rows = self.permutation[:num_selected]
+            selected_rows = self.permutation[:num_selected].to(param.device)
             compressed_grad = delta[selected_rows]
             dist.barrier()
 
