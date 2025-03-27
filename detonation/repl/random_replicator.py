@@ -34,6 +34,7 @@ class RandomReplicator(Replicator):
         ):
         device = optim.param_groups[0]["params"][0].device
         self.random_state = torch.Generator(device=device).manual_seed(self.seed)
+        self.max_size = max(p.size(0) for group in optim.param_groups for p in group["params"] if p.requires_grad)
         for group in optim.param_groups:
             for p in group["params"]:
                 if p.requires_grad:
@@ -46,6 +47,7 @@ class RandomReplicator(Replicator):
     def pre_step(self):
         self.data_transmit = 0
         self.data_receive = 0
+        self.permutation = torch.randperm(self.max_size, generator=self.random_state, device=self.random_state.device)
 
     def post_step(self):
         self.data_transmitted.append(self.data_transmit)
@@ -84,8 +86,9 @@ class RandomReplicator(Replicator):
         # Compress delta
         with timing(dict=step_metrics, key="train/optim/replicate/encode"):
             num_selected = int(delta.size(0) * self.compression_rate)
-            rand_scores = torch.rand(delta.size(0), generator=self.random_state, device=param.device)
-            _, selected_rows = torch.topk(rand_scores, num_selected, largest=False)
+            # rand_scores = torch.rand(delta.size(0), generator=self.random_state, device=param.device)
+            # _, selected_rows = torch.topk(rand_scores, num_selected, largest=False)
+            selected_rows = self.permutation[:num_selected]
             compressed_grad = delta[selected_rows]
             dist.barrier()
 
