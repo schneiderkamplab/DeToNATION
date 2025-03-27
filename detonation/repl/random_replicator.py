@@ -92,6 +92,10 @@ class RandomReplicator(Replicator):
                 print(f"num_selected: {num_selected}")
                 print(f"max_size: {self.max_size}")
                 print(f"permutation size: {self.permutation.size()}")
+                print(f"delta size: {delta.size()}")
+                print(f"param size: {param.size()}")
+                print(f"sharded_grad size: {sharded_grad.size()}")
+                1/0
             selected_rows = self.permutation[:num_selected]
             compressed_grad = delta[selected_rows]
             dist.barrier()
