@@ -167,7 +167,7 @@ def setup(batch_size, optim, optim_class, compression_rate, compression_topk, co
         if optim == 'deto-demo':
             replicator = DeMoReplicator(compression_topk=compression_topk, compression_chunk=compression_chunk)
         elif optim == 'deto-random':
-            replicator = RandomReplicator(compression_rate=compression_rate)
+            replicator = RandomReplicator(compression_rate=compression_rate, compression_chunk=compression_chunk)
         elif optim == 'deto-full':
             replicator = FullReplicator()
         else:
