@@ -86,7 +86,10 @@ def train(epochs, optim, single, model, train_loader, val_loader, optimizer, sch
                             loss.backward()
                             dist.barrier()
             with timing(dict=metrics, key="timing/train/optim"):
-                optimizer.step(step_metrics=metrics)
+                if isinstance(optimizer, AdamW):
+                    optimizer.step()
+                else:
+                    optimizer.step(step_metrics=metrics)
                 dist.barrier()
             with timing(dict=metrics, key="timing/train/getloss"):
                 loss_samples[0] += loss.item()
