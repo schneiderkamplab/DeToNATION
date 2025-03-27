@@ -83,7 +83,10 @@ class RandomReplicator(Replicator):
     
         # Compress delta
         with timing(dict=step_metrics, key="train/optim/replicate/encode"):
-            selected_rows = torch.randperm(delta.size(0), generator=self.random_state, device=param.device)[:int(self.compression_rate * delta.size(0))]
+            num_selected = int(delta.size(0) * self.compression)
+            rand_scores = torch.rand(delta.size(0), generator=self.random_state, device=param.device)
+            _, selected_rows = torch.topk(rand_scores, num_selected, largest=False)
+#            selected_rows = torch.randperm(delta.size(0), generator=self.random_state, device=param.device)[:num_selected]
             compressed_grad = delta[selected_rows]
             dist.barrier()
 
