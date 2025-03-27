@@ -88,6 +88,7 @@ class RandomReplicator(Replicator):
         with timing(dict=step_metrics, key="train/optim/replicate/encode"):
             selected_rows = self.permutations[delta.size(0)]
             compressed_grad = delta[selected_rows]
+            print(f"Compressed grad size: {compressed_grad.size()}")
             dist.barrier()
 
         # Remove compressed gradient from delta
