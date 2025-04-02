@@ -5,7 +5,9 @@ from detonation import DeMoReplicator, FullReplicator, NoReplicator, RandomRepli
 import functools
 import json
 from mltiming import timing_iterator, timing
+import numpy as np
 import os
+import random
 import torch
 import torch.distributed as dist
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, MixedPrecision, ShardingStrategy
@@ -32,7 +34,8 @@ from transformers.models.t5.modeling_t5 import T5Block
 @click.option('--skip-every', default=None, type=int)
 @click.option('--device', type=click.Choice(['cpu', 'cuda', 'mps']), default='cuda')
 @click.option('--shards', default=None, type=int, help="Number of shards per replication group (default: number of GPUs per node)")
-def main(batch_size, epochs, optim, optim_class, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards):
+@click.option('--rand-seed', default=None, type=int, help="Seed for random generators in numpy and torch")
+def main(batch_size, epochs, optim, optim_class, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards, rand_seed):
     rank, nnodes, gpus = int(os.environ['RANK']), int(os.environ['NNODES']), int(os.environ['GPUS'])
     aimrun.init(repo='.', experiment='t5', args={
         'batch_size': batch_size,
@@ -42,13 +45,25 @@ def main(batch_size, epochs, optim, optim_class, compression_rate, compression_t
         'optim': optim,
         'model': model,
         'comp_topk': compression_topk if optim=='deto-demo' else None,
-        'comp_chunk': compression_chunk if optim=='deto-demo' else None,
+        'comp_chunk': compression_chunk if optim=='deto-demo' or optim=='deto-random' else None,
+        'comp_rate': compression_rate if optim=='deto-random' else None,
+        'rep_every': replicate_every,
+        'seed': rand_seed,
     })
     if rank == 0:
         print(aimrun.get_runs()[0].hash)
     single = device in ('cpu', 'mps') or (device == 'cuda' and nnodes == gpus == 1)
-    model_and_co = setup(batch_size, optim, optim_class, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards)
+    model_and_co = setup(batch_size, optim, optim_class, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed)
     train(epochs, optim, single, *model_and_co)
+
+def seed(seed: int):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    elif torch.mps.is_available():
+        torch.mps.manual_seed()
 
 def train(epochs, optim, single, model, train_loader, val_loader, optimizer, scheduler, train_sampler):
     rank = int(os.environ['RANK'])
@@ -103,8 +118,8 @@ def train(epochs, optim, single, model, train_loader, val_loader, optimizer, sch
             if hasattr(replicator, "data_transmitted"):
                 metrics[f"data_transmitted_gb_{i}"] = sum(replicator.data_transmitted)/2**30
                 metrics[f"data_received_gb_{i}"] = sum(replicator.data_received)/2**30
-        if dist.get_rank() == 0:
-            print(json.dumps(metrics, indent=2))
+        #if dist.get_rank() == 0:
+            #print(json.dumps(metrics, indent=2))
         metrics.clear()
         # print training statistics
         if not single:
@@ -143,8 +158,10 @@ def train(epochs, optim, single, model, train_loader, val_loader, optimizer, sch
     dist.destroy_process_group()
     aimrun.close()
 
-def setup(batch_size, optim, optim_class, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards):
-    torch.manual_seed(42)
+def setup(batch_size, optim, optim_class, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed):
+    if rand_seed is not None:
+        seed(rand_seed)
+
     # prepare model
     tokenizer =  T5Tokenizer.from_pretrained(model, legacy=False)
     model = T5ForConditionalGeneration(T5Config.from_pretrained(model))
