@@ -138,8 +138,8 @@ class DeToNATION():
                                 param_group=group,
                                 step_metrics=step_metrics,
                             )
-                    else:
-                        new_grad = sharded_grad.to(param.device).to(param.dtype)
+                        else:
+                            new_grad = sharded_grad.to(param.device).to(param.dtype)
                     param.grad = new_grad
                     dist.barrier()
 
