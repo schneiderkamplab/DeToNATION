@@ -55,7 +55,7 @@ def prepare_detonation(
         sharding_strategy=ShardingStrategy.HYBRID_SHARD,
         **fsdp_kwargs,
     )
-    optim = DeToAdamW(
+    optim = DeToSGD(
         model.parameters(),
         replicator=replicator,
         sharding_parallel_group=sharding_parallel_group,
