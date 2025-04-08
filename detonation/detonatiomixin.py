@@ -16,7 +16,6 @@ TODO:
 
 import torch
 import torch.distributed as dist
-import torch.fft
 import torch.nn.functional as F
 from typing import Callable, List
 
@@ -28,7 +27,6 @@ class DeToNATIONMixin():
 
     def __init__(
         self,
-        params,
         detonation_weight_decay: float = 0.0,
         detonation_sign: bool = True,
         sharding_parallel_group: dist.ProcessGroup | None = None,
@@ -109,8 +107,8 @@ class DeToNATIONMixin():
                             param_state_dict=self.state[param],
                             param_group=group,
                         )
-                else:
-                    new_grad = sharded_grad.to(param.device).to(param.dtype)
+                    else:
+                        new_grad = sharded_grad.to(param.device).to(param.dtype)
                 param.grad = new_grad
 
                 # Sign-SGD

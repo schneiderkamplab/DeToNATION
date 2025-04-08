@@ -7,7 +7,7 @@ from torch.distributed.fsdp import (
 )
 from typing import Optional, Tuple
 
-from .optim import DeToNATION
+from .optim import DeToSGD, DeToAdamW
 from .repl import Replicator, DeMoReplicator
 
 __all__ = ["prepare_detonation"]
@@ -55,7 +55,7 @@ def prepare_detonation(
         sharding_strategy=ShardingStrategy.HYBRID_SHARD,
         **fsdp_kwargs,
     )
-    optim = DeToNATION(
+    optim = DeToAdamW(
         model.parameters(),
         replicator=replicator,
         sharding_parallel_group=sharding_parallel_group,
