@@ -1,15 +1,14 @@
 import torch
 import torch.distributed as dist
-import torch.fft
 from torch.optim import SGD
 from typing import Callable, List
 
 from ..detonatiomixin import DeToNATIONMixin
 from ..repl import DeMoReplicator, Replicator
 
-__all__ = ["DeToAdamW"]
+__all__ = ["DeToSGD"]
 
-class DeToAdamW(SGD, DeToNATIONMixin):
+class DeToSGD(SGD, DeToNATIONMixin):
 
     def __init__(
         self,
