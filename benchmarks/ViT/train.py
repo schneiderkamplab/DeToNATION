@@ -1,0 +1,195 @@
+import os
+import aimrun
+import click
+import torch
+import functools
+import torch.nn as nn
+import torch.optim as optim
+import torchvision
+import torchvision.transforms as transforms
+from mltiming import timing_iterator, timing
+from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, MixedPrecision, ShardingStrategy
+from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
+from transformers import ViTForImageClassification, ViTConfig
+from tqdm import tqdm
+from torch.optim import AdamW
+from torch.optim.lr_scheduler import StepLR
+from detonation import DeMoReplicator, FullReplicator, NoReplicator, prepare_detonation
+from transformers.models.vit.modeling_vit import ViTLayer
+import torch.distributed as dist
+
+
+@click.command()
+@click.option('--dataset', default='cifar100', type=click.Choice(['cifar10', 'cifar100']))
+@click.option('--batch-size', default=32, help='input batch size for training and validation (default: 32)')
+@click.option('--epochs', default=10, help='number of epochs to train (default: 10)')
+@click.option('--optim', default='deto-demo', type=click.Choice(['deto-demo', 'deto-full', 'deto-none', 'adamw']))
+@click.option('--optim-class', default='SGD', type=click.Choice(['SGD', 'AdamW']))
+@click.option('--compression-topk', default=2)
+@click.option('--compression-chunk', default=64)
+@click.option('--model', default='google-t5/t5-small', type=click.Choice(['google-t5/t5-small', 'google-t5/t5-base', 'google-t5/t5-large']))
+@click.option('--replicate-every', default=1)
+@click.option('--skip-every', default=None, type=int)
+@click.option('--device', type=click.Choice(['cpu', 'cuda', 'mps']), default='cuda')
+@click.option('--shards', default=None, type=int, help="Number of shards per replication group (default: number of GPUs per node)")
+def main(dataset, batch_size, epochs, optim, optim_class, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards):
+    rank, nnodes, gpus = int(os.environ['RANK']), int(os.environ['NNODES']), int(os.environ['GPUS'])
+    aimrun.init(repo='.', experiment='t5', args={
+        'batch_size': batch_size,
+        'epochs': epochs,
+        'nnodes': nnodes,
+        'gpus': gpus,
+        'optim': optim,
+        'model': model,
+        'comp_topk': compression_topk if optim=='deto-demo' else None,
+        'comp_chunk': compression_chunk if optim=='deto-demo' else None,
+    })
+    if rank == 0:
+        print(aimrun.get_runs()[0].hash)
+    single = device in ('cpu', 'mps') or (device == 'cuda' and nnodes == gpus == 1)
+    model_and_co = setup(dataset, batch_size, optim, optim_class, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards)
+    train(epochs, optim, single, *model_and_co)
+
+def train(epochs, optim, single, model, train_loader, val_loader, optimizer, scheduler, train_sampler):
+    rank = int(os.environ['RANK'])
+    for epoch in range(1, epochs+1):
+        model.train()
+        train_sampler.set_epoch(epoch)
+        loss_samples = torch.zeros(2).to(model.device)
+        metrics = {}
+        for inputs, targets in timing_iterator(iterable=tqdm(train_loader, desc=f"Training epoch {epoch}", disable=rank>0, colour="blue", ncols=150), dict=metrics, key="timing/train/fetch"):
+            if single:
+                batch = batch.to(model.device)
+            with timing(dict=metrics, key="timing/train/zerograd"):
+                optimizer.zero_grad()
+            if optim == 'adamw' or single:
+                with timing(dict=metrics, key="timing/train/forward"):
+                    loss = model(inputs, labels=targets).loss
+                with timing(dict=metrics, key="timing/train/backward"):
+                    loss.backward()
+            else:
+                with model.no_sync(): # Disable gradient replication for the backward pass
+                    with timing(dict=metrics, key="timing/train/forward"):
+                        loss = model(inputs, labels=targets).loss
+                    with timing(dict=metrics, key="timing/train/backward"):
+                        loss.backward()
+            with timing(dict=metrics, key="timing/train/optim"):
+                optimizer.step()
+            loss_samples[0] += loss.item()
+            loss_samples[1] += len(inputs)
+            with timing(dict=metrics, key="timing/train/track"):
+                metrics.update({'train/loss': loss.item()})
+                aimrun.track(metrics)
+        # print training statistics
+        if not single:
+            dist.all_reduce(loss_samples, op=dist.ReduceOp.SUM)
+        if rank == 0:
+            train_loss = loss_samples[0] / loss_samples[1]
+            print(f"Epoch {epoch} training loss  : {train_loss:.4f}")
+            aimrun.track({'epoch/train/loss': train_loss}, step=epoch)
+        # validation
+        model.eval()
+        loss_samples.zero_()
+        correct = 0
+        total = 0
+        with torch.no_grad():
+            for inputs, targets in timing_iterator(iterable=tqdm(val_loader, desc=f"Validating after epoch {epoch}", disable=rank>0, colour="green", ncols=150), dict=metrics, key='timing/val/fetch'):
+                inputs, targets = inputs.to(model.device), targets.to(model.device)
+                outputs = model(inputs, labels=targets)
+                loss = outputs.loss
+                loss_samples[0] += loss.item()
+                loss_samples[1] += len(inputs)
+                with timing(dict=metrics, key='timing/val/track'):
+                    metrics.update({'val/loss': loss.item()})
+                    aimrun.track(metrics)
+                _, predicted = outputs.logits.max(1)
+                total += targets.size(0)
+                correct += predicted.eq(targets).sum().item()
+        # End of epoch - calculate global accuracy
+        correct_tensor = torch.tensor(correct, device=model.device)
+        total_tensor = torch.tensor(total, device=model.device)
+        dist.all_reduce(total_tensor, op=dist.ReduceOp.SUM)
+        global_train_acc = 100.0 * correct_tensor.item() / total_tensor.item()
+        # print validation statistics
+        if not single:
+            dist.all_reduce(loss_samples, op=dist.ReduceOp.SUM)
+        if rank == 0:
+            val_loss = loss_samples[0] / loss_samples[1]
+            print(f"Epoch {epoch} validation Loss: {val_loss:.4f}, Train Acc: {global_train_acc:.3f}%")
+            aimrun.track({'epoch/val/loss': val_loss}, step=epoch)
+            aimrun.track({'epoch/val/accuracy': global_train_acc}, step=epoch)
+        scheduler.step()
+    dist.barrier()
+    dist.destroy_process_group()
+    aimrun.close()
+
+def setup(dataset, batch_size, optim, optim_class, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards):
+    torch.manual_seed(42)
+    config = ViTConfig(
+        image_size=224,
+        patch_size=16,
+        num_channels=3,
+        hidden_size=384,  # ViT-Small uses 384 dim
+        num_hidden_layers=12,
+        num_attention_heads=6,
+        intermediate_size=384 * 4, # MLP size is typically 4x hidden size
+        hidden_dropout_prob=0.1,
+        attention_probs_dropout_prob=0.1,
+        num_labels= 100 if dataset == 'cifar100' else 10
+    )
+    model = ViTForImageClassification(config)
+    model = model.to(device)
+
+    # Define Transforms
+    transform_train = transforms.Compose([
+        transforms.RandomCrop(32, padding=4),
+        transforms.RandomHorizontalFlip(),
+        transforms.Resize(224),  # Resize to ViT's expected input size
+        transforms.ToTensor(),
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2470, 0.2435, 0.2616)) if dataset == 'cifar10' else
+        transforms.Normalize((0.5071, 0.4867, 0.4408), (0.2675, 0.2565, 0.2761))
+    ])
+    
+    transform_test = transforms.Compose([
+        transforms.Resize(224),  # Resize to ViT's expected input size
+        transforms.ToTensor(),
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2470, 0.2435, 0.2616)) if dataset == 'cifar10' else
+        transforms.Normalize((0.5071, 0.4867, 0.4408), (0.2675, 0.2565, 0.2761))
+    ])
+
+    # Load dataset
+    if dataset == 'cifar10':
+        train_dataset = torchvision.datasets.CIFAR10(root='./data', train=True, download=True, transform=transform_train)
+        val_dataset = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=transform_test)
+    else:  
+        train_dataset = torchvision.datasets.CIFAR100(root='./data', train=True, download=True, transform=transform_train)
+        val_dataset = torchvision.datasets.CIFAR100(root='./data', train=False, download=True, transform=transform_test)
+    
+    train_sampler = DistributedSampler(train_dataset, shuffle=True)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False, num_workers=4, sampler=train_sampler)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4, sampler=DistributedSampler(val_dataset))
+    # prepare distributed training
+    if device == 'cuda':
+        torch.cuda.set_device(int(os.environ['LOCAL_RANK']))
+    
+    auto_wrap_policy = functools.partial(transformer_auto_wrap_policy, transformer_layer_cls={ViTLayer})
+    mixed_precision = MixedPrecision(param_dtype=torch.bfloat16, reduce_dtype=torch.bfloat16, buffer_dtype=torch.bfloat16) if torch.cuda.is_bf16_supported() else None
+    if single:
+        model = model.to(device)
+        optimizer = AdamW(model.parameters(), lr=1e-3, weight_decay=0.)
+    elif optim.startswith('deto-'):
+        if optim == 'deto-demo':
+            replicator = DeMoReplicator(compression_topk=compression_topk, compression_chunk=compression_chunk)
+        elif optim == 'deto-full':
+            replicator = FullReplicator()
+        else:
+            replicator = NoReplicator()
+        model, optimizer = prepare_detonation(model, replicator, fsdp_kwargs={"auto_wrap_policy": auto_wrap_policy, "mixed_precision": mixed_precision}, replicate_every=replicate_every, skip_every=skip_every, sharding_group_size=shards)
+    optim = optimizer._optimizer if hasattr(optimizer, "_optimizer") else optimizer
+    scheduler = StepLR(optim, step_size=1, gamma=0.85)
+    return model, train_loader, val_loader, optimizer, scheduler, train_sampler
+
+if __name__ == '__main__':
+    main()
