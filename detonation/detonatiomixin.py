@@ -23,39 +23,24 @@ from typing import Callable, List
 from mltiming import timing_iterator, timing
 import aimrun
 
-from ..repl import DeMoReplicator, Replicator
+from .repl import DeMoReplicator, Replicator
 
-__all__ = ["DeToNATION"]
+__all__ = ["DeToNATIONMixin"]
 
-class DeToNATION():
+class DeToNATIONMixin():
 
     def __init__(
         self,
-        params,
-        optim_class: torch.optim.Optimizer | str = torch.optim.SGD,
-        weight_decay: float = 0.0,
-        sign: bool = True,
+        detonation_weight_decay: float = 0.0,
+        detonation_sign: bool = True,
         sharding_parallel_group: dist.ProcessGroup | None = None,
         replication_parallel_group: dist.ProcessGroup | List[dist.ProcessGroup] | None = None,
         replicator: Replicator | List[Replicator] = DeMoReplicator(),
         replicate_every: int | List[int] = 1,
         skip_every: int | List[int] | None = None,
-        **kwargs,
     ):
-        if isinstance(optim_class, str):
-            optim_class = getattr(torch.optim, optim_class)
-        self._optimizer = optim_class(
-            params,
-            weight_decay=0.0,
-            **kwargs,
-        )
-        self.state = self._optimizer.state
-        self.param_groups = self._optimizer.param_groups
-        self.zero_grad = self._optimizer.zero_grad
-        self.__bases__ = (self._optimizer.__class__,)
-
-        self.weight_decay = weight_decay
-        self.sign = sign
+        self.detonation_weight_decay = detonation_weight_decay
+        self.detonation_sign = detonation_sign
         self.sharding_parallel_group = sharding_parallel_group # intra-node communication 
         self.replication_parallel_groups = replication_parallel_group if isinstance(replication_parallel_group, list) else [replication_parallel_group] # inter-node communication
         self.replicators = replicator if isinstance(replicator, list) else [replicator]
@@ -68,8 +53,6 @@ class DeToNATION():
         for replication_parallel_group in self.replication_parallel_groups:
             if dist.get_world_size(replication_parallel_group) == 0:
                 raise ValueError("Replication world size cannot be zero")
-        if optim_class.__name__ == "AdamW" and any(isinstance(replicator, DeMoReplicator) for replicator in self.replicators):
-            raise ValueError("AdamW optimizer cannot be used with DeMo replication")
         self.state["detonation_step"] = 0
         for replicator, replication_parallel_group in zip(self.replicators, self.replication_parallel_groups):
             replicator.init(self, replication_parallel_group=replication_parallel_group)
@@ -94,8 +77,7 @@ class DeToNATION():
         )
         return sharded_grad
 
-    @torch.no_grad()
-    def step(self, closure: Callable | None = None, step_metrics: dict = {}):
+    def step(self, closure: Callable | None = None, base_step: torch.optim.Optimizer.step = None, step_metrics: dict = {}):
         self.state["detonation_step"] += 1
 
         # Any step-wise initialization needed by the replicator
@@ -118,7 +100,7 @@ class DeToNATION():
 
                 # Step-Weight decay
                 with timing(dict=step_metrics, key="timing/train/optim/weight_decay"):
-                    if self.weight_decay != 0.0:
+                    if self.detonation_weight_decay != 0.0:
                         param.data.mul_(1.0 - lr * self.weight_decay)
                     dist.barrier()
 
@@ -134,7 +116,6 @@ class DeToNATION():
                                 param=param,
                                 param_state_dict=self.state[param],
                                 param_group=group,
-                                step_metrics=step_metrics,
                             )
                         else:
                             new_grad = sharded_grad.to(param.device).to(param.dtype)
@@ -143,13 +124,13 @@ class DeToNATION():
 
                 # Sign-SGD
                 with timing(dict=step_metrics, key="timing/train/optim/grad_sign"):
-                    if self.sign:
+                    if self.detonation_sign:
                         param.grad.sign_()
                     dist.barrier()
 
         # SGD step
         with timing(dict=step_metrics, key="timing/train/optim/sgd_step"):
-            result = self._optimizer.step(closure)
+            result = base_step(self, closure)
             dist.barrier()
 
         # Any step-wise finalization needed by the replicator
