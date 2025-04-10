@@ -1,2 +1,2 @@
-from .demo import *
-from .detonation import *
+from .DeToAdamW import *
+from .DeToSGD import *
