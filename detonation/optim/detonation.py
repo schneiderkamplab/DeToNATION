@@ -16,7 +16,6 @@ TODO:
 
 import torch
 import torch.distributed as dist
-import torch.fft
 import torch.nn.functional as F
 from typing import Callable, List
 
@@ -98,7 +97,6 @@ class DeToNATION():
     @torch.no_grad()
     def step(self, closure: Callable | None = None, step_metrics: dict = {}):
         self.state["detonation_step"] += 1
-        rank = dist.get_rank()
 
         # Any step-wise initialization needed by the replicator
         with timing(dict=step_metrics, key="timing/train/optim/rep_pre_step"):
@@ -138,8 +136,8 @@ class DeToNATION():
                                 param_group=group,
                                 step_metrics=step_metrics,
                             )
-                    else:
-                        new_grad = sharded_grad.to(param.device).to(param.dtype)
+                        else:
+                            new_grad = sharded_grad.to(param.device).to(param.dtype)
                     param.grad = new_grad
                     dist.barrier()
 
@@ -161,4 +159,4 @@ class DeToNATION():
             dist.barrier()
         aimrun.track(step_metrics)
 
-        return result
+        return result#
