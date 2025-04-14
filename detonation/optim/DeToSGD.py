@@ -42,4 +42,4 @@ class DeToSGD(SGD, DeToNATIONMixin):
 
     @torch.no_grad()
     def step(self, closure: Callable | None = None, step_metrics: dict = {}):
-        return DeToNATIONMixin.step(self, closure=closure, base_step=SGD.step, step_metrics=step_metrics)
+        return DeToNATIONMixin.step(self, closure=closure, base_step=SGD.step)

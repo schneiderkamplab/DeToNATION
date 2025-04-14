@@ -25,7 +25,6 @@ from transformers.models.t5.modeling_t5 import T5Block
 @click.option('--batch-size', default=32, help='input batch size for training and validation (default: 32)')
 @click.option('--epochs', default=10, help='number of epochs to train (default: 10)')
 @click.option('--optim', default='deto-demo', type=click.Choice(['deto-demo', 'deto-full', 'deto-none', 'adamw', 'deto-random']))
-@click.option('--optim-class', default='SGD', type=click.Choice(['SGD', 'AdamW']))
 @click.option('--compression-rate', default=0.1)
 @click.option('--compression-topk', default=2)
 @click.option('--compression-chunk', default=64)
@@ -38,7 +37,7 @@ from transformers.models.t5.modeling_t5 import T5Block
 @click.option('--train-samples', default=15000, type=int, help="Number of smaples in the train dataset")
 @click.option('--validation-samples', default=3000, type=int, help="Number of smaples in the validation dataset")
 @click.option('--dataset', default='WikiHow', type=click.Choice(['WikiHow', 'OpusBooks']), help='Dataset to train on.')
-def main(batch_size, epochs, optim, optim_class, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards, rand_seed, train_samples, validation_samples, dataset):
+def main(batch_size, epochs, optim, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards, rand_seed, train_samples, validation_samples, dataset):
     rank, nnodes, gpus = int(os.environ['RANK']), int(os.environ['NNODES']), int(os.environ['GPUS'])
     aimrun.init(repo='.', experiment='t5', args={
         'batch_size': batch_size,
@@ -59,7 +58,7 @@ def main(batch_size, epochs, optim, optim_class, compression_rate, compression_t
     if rank == 0:
         print(aimrun.get_runs()[0].hash)
     single = device in ('cpu', 'mps') or (device == 'cuda' and nnodes == gpus == 1)
-    model_and_co = setup(batch_size, optim, optim_class, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, train_samples, validation_samples, dataset)
+    model_and_co = setup(batch_size, optim, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, train_samples, validation_samples, dataset)
     train(epochs, optim, single, *model_and_co)
 
 def seed(seed: int):
@@ -136,7 +135,7 @@ def train(epochs, optim, single, model, train_loader, val_loader, optimizer, sch
     dist.destroy_process_group()
     aimrun.close()
 
-def setup(batch_size, optim, optim_class, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, train_samples, validation_samples, dataset):
+def setup(batch_size, optim, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, train_samples, validation_samples, dataset):
     if rand_seed is not None:
         seed(rand_seed)
 
@@ -175,7 +174,7 @@ def setup(batch_size, optim, optim_class, compression_rate, compression_topk, co
             replicator = FullReplicator()
         else:
             replicator = NoReplicator()
-        model, optimizer = prepare_detonation(model, replicator, fsdp_kwargs={"auto_wrap_policy": auto_wrap_policy, "mixed_precision": mixed_precision}, replicate_every=replicate_every, skip_every=skip_every, sharding_group_size=shards, optim_class=optim_class)
+        model, optimizer = prepare_detonation(model, replicator, fsdp_kwargs={"auto_wrap_policy": auto_wrap_policy, "mixed_precision": mixed_precision}, replicate_every=replicate_every, skip_every=skip_every, sharding_group_size=shards)
     else:
         model = FSDP(model, auto_wrap_policy=auto_wrap_policy, mixed_precision=mixed_precision, device_id=int(os.environ['LOCAL_RANK']), sharding_strategy=ShardingStrategy.HYBRID_SHARD)
         optimizer = AdamW(model.parameters(), lr=1e-3, weight_decay=0.)
