@@ -67,7 +67,6 @@ class DeMoReplicator(Replicator):
             if self.compression_decay != 1:
                 delta.mul_(self.compression_decay)
             delta.add_(sharded_grad, alpha=param_group["lr"])
-            dist.barrier()
 
         # Replicating delta only if needed
         with timing(dict=step_metrics, key="train/optim/replicate/noreplication"):
@@ -75,7 +74,6 @@ class DeMoReplicator(Replicator):
                 new_grad = delta.clone()
                 delta.zero_()
                 return new_grad
-            dist.barrier()
 
         # Compress delta
         with timing(dict=step_metrics, key="train/optim/replicate/encode"):
@@ -83,38 +81,30 @@ class DeMoReplicator(Replicator):
                 self.transform.encode(delta), self.compression_topk
             )
             sparse_idx = sparse_idx.to(torch.int32)
-            dist.barrier()
 
         # Estimate transmitted delta
         with timing(dict=step_metrics, key="train/optim/replicate/estimate"):
             transmit_grad = self.transform.decode(
                 DCTCompress.decompress(sparse_idx.to(torch.int64), sparse_val, xshape, param.device, param.dtype)
             )
-            dist.barrier()
 
         # Remove transmitted from delta
         with timing(dict=step_metrics, key="train/optim/replicate/subtract"):
             delta.sub_(transmit_grad)
-            dist.barrier()
 
         # Prepare and gather the indices and values
         with timing(dict=step_metrics, key="train/optim/replicate/precommunicate"):
             sparse_idx_gather = [torch.zeros_like(sparse_idx) for _ in range(self._replication_world_size)]
             sparse_val_gather = [torch.zeros_like(sparse_val) for _ in range(self._replication_world_size)]
-            dist.barrier()
         with timing(dict=step_metrics, key="train/optim/replicate/communicate"):
             sparse_idx_handle = dist.all_gather(sparse_idx_gather, sparse_idx, group=self.replication_parallel_group, async_op=False)
             sparse_val_handle = dist.all_gather(sparse_val_gather, sparse_val, group=self.replication_parallel_group, async_op=False)
-#            sparse_idx_handle.wait()
-#            sparse_val_handle.wait()
-            dist.barrier()
 
         # Log I/O data size
         with timing(dict=step_metrics, key="train/optim/replicate/calculateio"):
             self.data_transmit += sparse_idx.nbytes + sparse_val.nbytes
             for si, v in zip(sparse_idx_gather, sparse_val_gather):
                 self.data_receive += si.nbytes + v.nbytes
-            dist.barrier()
 
         # Decode new gradient from all nodes
         with timing(dict=step_metrics, key="train/optim/replicate/decode"):
@@ -122,5 +112,4 @@ class DeMoReplicator(Replicator):
             new_grad = self.transform.decode(
                 DCTCompress.batch_decompress(sparse_idx_gather, sparse_val_gather, xshape, param.device, param.dtype)
             )
-            dist.barrier()
         return new_grad

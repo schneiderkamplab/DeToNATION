@@ -96,13 +96,11 @@ class DeToNATIONMixin():
                     unsharded_grad = param.grad.data
                     param.grad = None
                     sharded_grad = self._grad_reduce_scatter(unsharded_grad)
-                    dist.barrier()
 
                 # Step-Weight decay
                 with timing(dict=step_metrics, key="timing/train/optim/weight_decay"):
                     if self.detonation_weight_decay != 0.0:
                         param.data.mul_(1.0 - lr * self.weight_decay)
-                    dist.barrier()
 
                 # Replicating the gradient if needed
                 with timing(dict=step_metrics, key="timing/train/optim/replicate"):
@@ -116,28 +114,25 @@ class DeToNATIONMixin():
                                 param=param,
                                 param_state_dict=self.state[param],
                                 param_group=group,
+                                step_metrics=step_metrics,
                             )
                         else:
                             new_grad = sharded_grad.to(param.device).to(param.dtype)
                     param.grad = new_grad
-                    dist.barrier()
 
                 # Sign-SGD
                 with timing(dict=step_metrics, key="timing/train/optim/grad_sign"):
                     if self.detonation_sign:
                         param.grad.sign_()
-                    dist.barrier()
 
         # SGD step
         with timing(dict=step_metrics, key="timing/train/optim/sgd_step"):
             result = base_step(self, closure)
-            dist.barrier()
 
         # Any step-wise finalization needed by the replicator
         with timing(dict=step_metrics, key="timing/train/optim/rep_post_step"):
             for replicator in self.replicators:
                 replicator.post_step()
-            dist.barrier()
         aimrun.track(step_metrics)
 
-        return result#
+        return result

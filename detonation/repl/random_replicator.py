@@ -50,7 +50,6 @@ class RandomReplicator(Replicator):
         rand_score = torch.rand(max(self.sizes), generator=self.random_state, device=self.random_state.device)
         self.permutations = {size: torch.topk(rand_score[:size], int(self.compression_rate * size), largest=False).indices for size in self.sizes}
         # self.permutations = {size: torch.randperm(size, generator=self.random_state, device=self.random_state.device)[:int(self.compression_rate * size)] for size in self.sizes}
-        dist.barrier()
 
     def post_step(self):
         self.data_transmitted.append(self.data_transmit)
@@ -68,7 +67,6 @@ class RandomReplicator(Replicator):
         with timing(dict=step_metrics, key="train/optim/replicate/noreplication"):
             if self.compression_rate == 0:
                 return sharded_grad.to(device=param.device, dtype=param.dtype)
-            dist.barrier()
 
         # Decay delta and add the gradient
         with timing(dict=step_metrics, key="train/optim/replicate/delta"):
@@ -76,7 +74,6 @@ class RandomReplicator(Replicator):
             if self.compression_decay != 1:
                 delta.mul_(self.compression_decay)
             delta.add_(sharded_grad, alpha=param_group["lr"])
-            dist.barrier()
 
         # Replicating delta only if needed
         with timing(dict=step_metrics, key="train/optim/replicate/noreplication"):
@@ -84,37 +81,31 @@ class RandomReplicator(Replicator):
                 new_grad = delta.clone()
                 delta.zero_()
                 return new_grad
-            dist.barrier()
 
         # Compress delta
         with timing(dict=step_metrics, key="train/optim/replicate/encode"):
             delta = delta.view(-1, self.compression_chunk)
             selected_rows = self.permutations[delta.size(0)]
             compressed_grad = delta[selected_rows]
-            dist.barrier()
 
         # Remove compressed gradient from delta
         with timing(dict=step_metrics, key="train/optim/replicate/remove"):
             mask = torch.zeros(delta.size(0), dtype=torch.bool, device=param.device)
             mask[selected_rows] = True
             delta.mul_(~mask.unsqueeze(1) if delta.dim() > 1 else ~mask)
-            dist.barrier()
 
         # Average the compressed gradient
         with timing(dict=step_metrics, key="train/optim/replicate/communicate"):
             dist.all_reduce(compressed_grad, dist.ReduceOp.AVG, group=self.replication_parallel_group)
-            dist.barrier()
 
         # Log I/O data size
         with timing(dict=step_metrics, key="train/optim/replicate/calculateio"):
             self.data_transmit += compressed_grad.nbytes
             self.data_receive += compressed_grad.nbytes
-            dist.barrier()
 
         # Decode new gradient from all nodes
         with timing(dict=step_metrics, key="train/optim/replicate/decode"):
             new_grad = torch.zeros_like(delta, device=param.device)
             new_grad[selected_rows] = compressed_grad
             new_grad = new_grad.view_as(sharded_grad)
-            dist.barrier()
         return new_grad
