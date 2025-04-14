@@ -73,32 +73,22 @@ def train(epochs, optim, single, model, train_loader, val_loader, optimizer, sch
         train_sampler.set_epoch(epoch)
         loss_samples = torch.zeros(2).to(model.device)
         metrics = {}
-        for inputs, targets in timing_iterator(iterable=tqdm(train_loader, desc=f"Training epoch {epoch}", disable=rank>0, colour="blue", ncols=150), dict=metrics, key="timing/train/fetch"):
+        for inputs, targets in tqdm(train_loader, desc=f"Training epoch {epoch}", disable=rank>0, colour="blue", ncols=150):
             if single:
                 batch = batch.to(model.device)
-            with timing(dict=metrics, key="timing/train/zerograd"):
-                optimizer.zero_grad()
+            optimizer.zero_grad()
             if optim == 'adamw' or single:
-                with timing(dict=metrics, key="timing/train/forward"):
-                    loss = model(inputs, labels=targets).loss
-                with timing(dict=metrics, key="timing/train/backward"):
-                    loss.backward()
+                loss = model(inputs, labels=targets).loss
+                loss.backward()
             else:
                 with model.no_sync(): # Disable gradient replication for the backward pass
-                    with timing(dict=metrics, key="timing/train/forward"):
-                        loss = model(inputs, labels=targets).loss
-                    with timing(dict=metrics, key="timing/train/backward"):
-                        loss.backward()
-            with timing(dict=metrics, key="timing/train/optim"):
-                if isinstance(optimizer, AdamW):
-                    optimizer.step()
-                else:
-                    optimizer.step(step_metrics=metrics)
+                    loss = model(inputs, labels=targets).loss
+                    loss.backward()
+            optimizer.step()
             loss_samples[0] += loss.item()
             loss_samples[1] += len(inputs)
-            with timing(dict=metrics, key="timing/train/track"):
-                metrics.update({'train/loss': loss.item()})
-                aimrun.track(metrics)
+            metrics.update({'train/loss': loss.item()})
+            aimrun.track(metrics)
         # print training statistics
         if not single:
             dist.all_reduce(loss_samples, op=dist.ReduceOp.SUM)
@@ -112,15 +102,14 @@ def train(epochs, optim, single, model, train_loader, val_loader, optimizer, sch
         correct = 0
         total = 0
         with torch.no_grad():
-            for inputs, targets in timing_iterator(iterable=tqdm(val_loader, desc=f"Validating after epoch {epoch}", disable=rank>0, colour="green", ncols=150), dict=metrics, key='timing/val/fetch'):
+            for inputs, targets in tqdm(val_loader, desc=f"Validating after epoch {epoch}", disable=rank>0, colour="green", ncols=150):
                 inputs, targets = inputs.to(model.device), targets.to(model.device)
                 outputs = model(inputs, labels=targets)
                 loss = outputs.loss
                 loss_samples[0] += loss.item()
                 loss_samples[1] += len(inputs)
-                with timing(dict=metrics, key='timing/val/track'):
-                    metrics.update({'val/loss': loss.item()})
-                    aimrun.track(metrics)
+                metrics.update({'val/loss': loss.item()})
+                aimrun.track(metrics)
                 _, predicted = outputs.logits.max(1)
                 total += targets.size(0)
                 correct += predicted.eq(targets).sum().item()

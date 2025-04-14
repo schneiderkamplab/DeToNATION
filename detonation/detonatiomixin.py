@@ -77,62 +77,53 @@ class DeToNATIONMixin():
         )
         return sharded_grad
 
-    def step(self, closure: Callable | None = None, base_step: torch.optim.Optimizer.step = None, step_metrics: dict = {}):
+    def step(self, closure: Callable | None = None, base_step: torch.optim.Optimizer.step = None):
         self.state["detonation_step"] += 1
 
         # Any step-wise initialization needed by the replicator
-        with timing(dict=step_metrics, key="timing/train/optim/rep_pre_step"):
-            for replicator in self.replicators:
-                replicator.pre_step()
+        for replicator in self.replicators:
+            replicator.pre_step()
 
-        for group in timing_iterator(self.param_groups, dict=step_metrics, key="timing/train/optim/params"):
+        for group in self.param_groups:
             lr = group["lr"]
             for param in group["params"]:
                 if not param.requires_grad:
                     continue
 
                 # Sharding gradient if needed
-                with timing(dict=step_metrics, key="timing/train/optim/sharding"):
-                    unsharded_grad = param.grad.data
-                    param.grad = None
-                    sharded_grad = self._grad_reduce_scatter(unsharded_grad)
+                unsharded_grad = param.grad.data
+                param.grad = None
+                sharded_grad = self._grad_reduce_scatter(unsharded_grad)
 
                 # Step-Weight decay
-                with timing(dict=step_metrics, key="timing/train/optim/weight_decay"):
-                    if self.detonation_weight_decay != 0.0:
-                        param.data.mul_(1.0 - lr * self.weight_decay)
+                if self.detonation_weight_decay != 0.0:
+                    param.data.mul_(1.0 - lr * self.weight_decay)
 
                 # Replicating the gradient if needed
-                with timing(dict=step_metrics, key="timing/train/optim/replicate"):
-                    for replicate_every, skip_every, replicator in zip(self.replicate_everys, self.skip_everys, self.replicators):
-                        if (
-                            (self.state["detonation_step"] % replicate_every == 0) and
-                            (skip_every is None or (self.state["detonation_step"] % skip_every != 0))
-                        ):
-                            new_grad = replicator.replicate(
-                                sharded_grad=sharded_grad,
-                                param=param,
-                                param_state_dict=self.state[param],
-                                param_group=group,
-                                step_metrics=step_metrics,
-                            )
-                        else:
-                            new_grad = sharded_grad.to(param.device).to(param.dtype)
-                    param.grad = new_grad
+                for replicate_every, skip_every, replicator in zip(self.replicate_everys, self.skip_everys, self.replicators):
+                    if (
+                        (self.state["detonation_step"] % replicate_every == 0) and
+                        (skip_every is None or (self.state["detonation_step"] % skip_every != 0))
+                    ):
+                        new_grad = replicator.replicate(
+                            sharded_grad=sharded_grad,
+                            param=param,
+                            param_state_dict=self.state[param],
+                            param_group=group,
+                        )
+                    else:
+                        new_grad = sharded_grad.to(param.device).to(param.dtype)
+                param.grad = new_grad
 
                 # Sign-SGD
-                with timing(dict=step_metrics, key="timing/train/optim/grad_sign"):
-                    if self.detonation_sign:
-                        param.grad.sign_()
+                if self.detonation_sign:
+                    param.grad.sign_()
 
         # SGD step
-        with timing(dict=step_metrics, key="timing/train/optim/sgd_step"):
-            result = base_step(self, closure)
+        result = base_step(self, closure)
 
         # Any step-wise finalization needed by the replicator
-        with timing(dict=step_metrics, key="timing/train/optim/rep_post_step"):
-            for replicator in self.replicators:
-                replicator.post_step()
-        aimrun.track(step_metrics)
+        for replicator in self.replicators:
+            replicator.post_step()
 
         return result

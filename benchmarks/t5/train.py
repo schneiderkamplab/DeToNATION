@@ -76,56 +76,31 @@ def train(epochs, optim, single, model, train_loader, val_loader, optimizer, sch
     for epoch in range(1, epochs+1):
         # train
         model.train()
-        #prof.export_chrome_trace('trace.json')
         train_sampler.set_epoch(epoch)
         loss_samples = torch.zeros(2).to(model.device)
         metrics = {}
-        for batch in timing_iterator(iterable=tqdm(train_loader, desc=f"Training epoch {epoch}", disable=rank>0, colour="blue", ncols=150), dict=metrics, key="timing/train/fetch"):
-            with timing(dict=metrics, key="timing/train/togpu"):
-                if single:
-                    batch["source_ids"] = batch["source_ids"].to(model.device)
-                    batch["source_mask"] = batch["source_mask"].to(model.device)
-                    batch["target_ids"] = batch["target_ids"].to(model.device)
-                    #dist.barrier()
-            with timing(dict=metrics, key="timing/train/zerograd"):
-                optimizer.zero_grad()
-                #dist.barrier()
-            with timing(dict=metrics, key="timing/train/forwardbackward"):
-                if optim == 'adamw' or single:
-                    with timing(dict=metrics, key="timing/train/forward"):
-                        loss = model(input_ids=batch["source_ids"],attention_mask=batch["source_mask"],labels=batch["target_ids"] )["loss"]
-                        #dist.barrier()
-                    with timing(dict=metrics, key="timing/train/backward"):
-                        loss.backward()
-                        #dist.barrier()
-                else:
-                    with model.no_sync(): # Disable gradient replication for the backward pass
-                        with timing(dict=metrics, key="timing/train/forward"):
-                            loss = model(input_ids=batch["source_ids"],attention_mask=batch["source_mask"],labels=batch["target_ids"] )["loss"]
-                            #dist.barrier()
-                        with timing(dict=metrics, key="timing/train/backward"):
-                            loss.backward()
-                            #dist.barrier()
-            with timing(dict=metrics, key="timing/train/optim"):
-                if isinstance(optimizer, AdamW):
-                    optimizer.step()
-                else:
-                    optimizer.step(step_metrics=metrics)
-                #dist.barrier()
-            with timing(dict=metrics, key="timing/train/getloss"):
-                loss_samples[0] += loss.item()
-                loss_samples[1] += len(batch)
-                #dist.barrier()
-            with timing(dict=metrics, key="timing/train/track"):
-                metrics.update({'train/loss': loss.item()})
-                aimrun.track(metrics)
-                #dist.barrier()
+        for batch in tqdm(train_loader, desc=f"Training epoch {epoch}", disable=rank>0, colour="blue", ncols=150):
+            if single:
+                batch["source_ids"] = batch["source_ids"].to(model.device)
+                batch["source_mask"] = batch["source_mask"].to(model.device)
+                batch["target_ids"] = batch["target_ids"].to(model.device)
+            optimizer.zero_grad()
+            if optim == 'adamw' or single:
+                loss = model(input_ids=batch["source_ids"],attention_mask=batch["source_mask"],labels=batch["target_ids"] )["loss"]
+                loss.backward()
+            else:
+                with model.no_sync(): # Disable gradient replication for the backward pass
+                    loss = model(input_ids=batch["source_ids"],attention_mask=batch["source_mask"],labels=batch["target_ids"] )["loss"]
+                    loss.backward()
+            optimizer.step()
+            loss_samples[0] += loss.item()
+            loss_samples[1] += len(batch)
+            metrics.update({'train/loss': loss.item()})
+            aimrun.track(metrics)
         for i, replicator in enumerate(optimizer.replicators):
             if hasattr(replicator, "data_transmitted"):
                 metrics[f"data_transmitted_gb_{i}"] = sum(replicator.data_transmitted)/2**30
                 metrics[f"data_received_gb_{i}"] = sum(replicator.data_received)/2**30
-        #if dist.get_rank() == 0:
-            #print(json.dumps(metrics, indent=2))
         metrics.clear()
         # print training statistics
         if not single:
@@ -139,19 +114,17 @@ def train(epochs, optim, single, model, train_loader, val_loader, optimizer, sch
         loss_samples.zero_()
         metrics.clear()
         with torch.no_grad():
-            for batch in timing_iterator(iterable=tqdm(val_loader, desc=f"Validating after epoch {epoch}", disable=rank>0, colour="green", ncols=150), dict=metrics, key='timing/val/fetch'):
+            for batch in tqdm(val_loader, desc=f"Validating after epoch {epoch}", disable=rank>0, colour="green", ncols=150):
                 if single:
                     batch["source_ids"] = batch["source_ids"].to(model.device)
                     batch["source_mask"] = batch["source_mask"].to(model.device)
                     batch["target_ids"] = batch["target_ids"].to(model.device)
-                with timing(dict=metrics, key='timing/val/forward'):
-                    loss = model(input_ids=batch["source_ids"],attention_mask=batch["source_mask"],labels=batch["target_ids"])["loss"]
+                loss = model(input_ids=batch["source_ids"],attention_mask=batch["source_mask"],labels=batch["target_ids"])["loss"]
                 loss_samples[0] += loss.item()
                 loss_samples[1] += len(batch)
-                with timing(dict=metrics, key='timing/val/track'):
-                    metrics.update({'val/loss': loss.item()})
-                    aimrun.track(metrics)
-                    metrics.clear()
+                metrics.update({'val/loss': loss.item()})
+                aimrun.track(metrics)
+                metrics.clear()
         # print validation statistics
         if not single:
             dist.all_reduce(loss_samples, op=dist.ReduceOp.SUM)
@@ -160,7 +133,6 @@ def train(epochs, optim, single, model, train_loader, val_loader, optimizer, sch
             print(f"Epoch {epoch} validation Loss: {val_loss:.4f}")
             aimrun.track({'epoch/val/loss': val_loss}, step=epoch)
         scheduler.step()
-    #dist.barrier()
     dist.destroy_process_group()
     aimrun.close()
 
