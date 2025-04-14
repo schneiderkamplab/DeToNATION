@@ -34,11 +34,14 @@ class RandomReplicator(Replicator):
         ):
         device = optim.param_groups[0]["params"][0].device
         self.random_state = torch.Generator(device=device).manual_seed(self.seed)
-        self.sizes = set(p.view(-1, self.compression_chunk).size(0) for group in optim.param_groups for p in group["params"] if p.requires_grad)
+        self.sizes = set()
         for group in optim.param_groups:
-            for p in group["params"]:
-                if p.requires_grad:
-                    optim.state[p]["demo_delta"] = torch.zeros_like(p)
+            for p in group['params']:
+                if not p.requires_grad:
+                    continue
+                closest_chunk = self.__class__._get_smaller_split(len(p), self.compression_chunk)
+                self.sizes.add(p.view(-1, closest_chunk).size(0))
+                optim.state[p]["demo_delta"] = torch.zeros_like(p)
         self.replication_parallel_group = optim.replication_parallel_group if replication_parallel_group is None else replication_parallel_group
         self._replication_world_size = self.replication_parallel_group.size()
         self.data_transmitted = []
@@ -79,7 +82,8 @@ class RandomReplicator(Replicator):
             return new_grad
 
         # Compress delta
-        delta = delta.view(-1, self.compression_chunk)
+        closest_chunk = self.__class__._get_smaller_split(len(delta), self.compression_chunk)
+        delta = delta.view(-1, closest_chunk)
         selected_rows = self.permutations[delta.size(0)]
         compressed_grad = delta[selected_rows]
 
@@ -100,3 +104,58 @@ class RandomReplicator(Replicator):
         new_grad[selected_rows] = compressed_grad
         new_grad = new_grad.view_as(sharded_grad)
         return new_grad
+
+    def _get_prime_divisors(n):
+        divisors = []
+        while n % 2 == 0:
+            divisors.append(2)
+            n //= 2
+        while n % 3 == 0:
+            divisors.append(3)
+            n //= 3
+        i = 5
+        while i * i <= n:
+            for k in (i, i + 2):
+                while n % k == 0:
+                    divisors.append(k)
+                    n //= k
+            i += 6
+        if n > 1:
+            divisors.append(n)
+        return divisors
+
+    @classmethod
+    def _get_divisors(cls, n):
+        divisors = []
+        if n == 1:
+            divisors.append(1)
+        elif n > 1:
+            prime_factors = cls._get_prime_divisors(n)
+            divisors = [1]
+            last_prime = 0
+            factor = 0
+            slice_len = 0
+            # Find all the products that are divisors of n
+            for prime in prime_factors:
+                if last_prime != prime:
+                    slice_len = len(divisors)
+                    factor = prime
+                else:
+                    factor *= prime
+                for i in range(slice_len):
+                    divisors.append(divisors[i] * factor)
+                last_prime = prime
+            divisors.sort()
+        return divisors
+
+    @classmethod
+    def _get_smaller_split(cls, n, close_to):
+        all_divisors = cls._get_divisors(n)
+        for ix, val in enumerate(all_divisors):
+            if val == close_to:
+                return val
+            if val > close_to:
+                if ix == 0:
+                    return val
+                return all_divisors[ix - 1]
+        return n
