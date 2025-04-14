@@ -89,8 +89,10 @@ class DeMoReplicator(Replicator):
         # Prepare and gather the indices and values
         sparse_idx_gather = [torch.zeros_like(sparse_idx) for _ in range(self._replication_world_size)]
         sparse_val_gather = [torch.zeros_like(sparse_val) for _ in range(self._replication_world_size)]
-        sparse_idx_handle = dist.all_gather(sparse_idx_gather, sparse_idx, group=self.replication_parallel_group, async_op=False)
-        sparse_val_handle = dist.all_gather(sparse_val_gather, sparse_val, group=self.replication_parallel_group, async_op=False)
+        sparse_idx_handle = dist.all_gather(sparse_idx_gather, sparse_idx, group=self.replication_parallel_group, async_op=True)
+        sparse_val_handle = dist.all_gather(sparse_val_gather, sparse_val, group=self.replication_parallel_group, async_op=True)
+        sparse_val_handle.wait()
+        sparse_idx_handle.wait()
 
         # Log I/O data size
         self.data_transmit += sparse_idx.nbytes + sparse_val.nbytes
