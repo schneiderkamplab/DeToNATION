@@ -52,7 +52,6 @@ class RandomReplicator(Replicator):
         self.data_receive = 0
         rand_score = torch.rand(max(self.sizes), generator=self.random_state, device=self.random_state.device)
         self.permutations = {size: torch.topk(rand_score[:size], int(self.compression_rate * size), largest=False).indices for size in self.sizes}
-        # self.permutations = {size: torch.randperm(size, generator=self.random_state, device=self.random_state.device)[:int(self.compression_rate * size)] for size in self.sizes}
 
     def post_step(self):
         self.data_transmitted.append(self.data_transmit)
