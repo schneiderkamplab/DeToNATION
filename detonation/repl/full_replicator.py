@@ -31,9 +31,8 @@ class FullReplicator(Replicator):
         param: torch.nn.Parameter,
         param_state_dict: dict,
         param_group: Dict[str, Any],
-        step_metrics: dict,
     ) -> torch.Tensor:
         dist.all_reduce(sharded_grad, dist.ReduceOp.AVG, group=self.replication_parallel_group)
         self.data_receive += sharded_grad.nbytes
         self.data_transmit += sharded_grad.nbytes
-        return sharded_grad.to(param.device).to(param.dtype)
+        return sharded_grad.to(device=param.device, dtype=param.dtype)

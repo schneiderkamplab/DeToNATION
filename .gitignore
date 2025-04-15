@@ -3,3 +3,4 @@ dist
 .aim
 *.out
 *.err
+.data

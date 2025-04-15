@@ -3,11 +3,13 @@ import aimrun
 import click
 import torch
 import functools
+import numpy as np
 import torch.nn as nn
 import torch.optim as optim
 import torchvision
 import torchvision.transforms as transforms
 from mltiming import timing_iterator, timing
+import random
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, MixedPrecision, ShardingStrategy
@@ -16,7 +18,7 @@ from transformers import ViTForImageClassification, ViTConfig
 from tqdm import tqdm
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import StepLR
-from detonation import DeMoReplicator, FullReplicator, NoReplicator, prepare_detonation
+from detonation import DeMoReplicator, FullReplicator, NoReplicator, RandomReplicator, prepare_detonation
 from transformers.models.vit.modeling_vit import ViTLayer
 import torch.distributed as dist
 
@@ -25,32 +27,37 @@ import torch.distributed as dist
 @click.option('--dataset', default='cifar100', type=click.Choice(['cifar10', 'cifar100']))
 @click.option('--batch-size', default=32, help='input batch size for training and validation (default: 32)')
 @click.option('--epochs', default=10, help='number of epochs to train (default: 10)')
-@click.option('--optim', default='deto-demo', type=click.Choice(['deto-demo', 'deto-full', 'deto-none', 'adamw']))
-@click.option('--optim-class', default='SGD', type=click.Choice(['SGD', 'AdamW']))
+@click.option('--optim', default='deto-demo', type=click.Choice(['deto-demo', 'deto-full', 'deto-none', 'adamw', 'deto-random']))
+@click.option('--compression-rate', default=0.1)
 @click.option('--compression-topk', default=2)
 @click.option('--compression-chunk', default=64)
-@click.option('--model', default='google-t5/t5-small', type=click.Choice(['google-t5/t5-small', 'google-t5/t5-base', 'google-t5/t5-large']))
 @click.option('--replicate-every', default=1)
 @click.option('--skip-every', default=None, type=int)
 @click.option('--device', type=click.Choice(['cpu', 'cuda', 'mps']), default='cuda')
 @click.option('--shards', default=None, type=int, help="Number of shards per replication group (default: number of GPUs per node)")
-def main(dataset, batch_size, epochs, optim, optim_class, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards):
+@click.option('--rand-seed', default=None, type=int, help="Seed for random generators in numpy and torch")
+def main(dataset, batch_size, epochs, optim, compression_rate, compression_topk, compression_chunk, replicate_every, skip_every, device, shards, rand_seed):
     rank, nnodes, gpus = int(os.environ['RANK']), int(os.environ['NNODES']), int(os.environ['GPUS'])
-    aimrun.init(repo='.', experiment='t5', args={
-        'batch_size': batch_size,
-        'epochs': epochs,
+    run_args = click.get_current_context().params
+    run_args.update({
         'nnodes': nnodes,
         'gpus': gpus,
-        'optim': optim,
-        'model': model,
-        'comp_topk': compression_topk if optim=='deto-demo' else None,
-        'comp_chunk': compression_chunk if optim=='deto-demo' else None,
     })
+    aimrun.init(repo='.', experiment='ViT', args=run_args)
     if rank == 0:
         print(aimrun.get_runs()[0].hash)
     single = device in ('cpu', 'mps') or (device == 'cuda' and nnodes == gpus == 1)
-    model_and_co = setup(dataset, batch_size, optim, optim_class, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards)
+    model_and_co = setup(dataset, batch_size, optim, compression_rate, compression_topk, compression_chunk, replicate_every, skip_every, device, single, shards, rand_seed)
     train(epochs, optim, single, *model_and_co)
+
+def seed(seed: int):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    elif torch.mps.is_available():
+        torch.mps.manual_seed()
 
 def train(epochs, optim, single, model, train_loader, val_loader, optimizer, scheduler, train_sampler):
     rank = int(os.environ['RANK'])
@@ -59,29 +66,22 @@ def train(epochs, optim, single, model, train_loader, val_loader, optimizer, sch
         train_sampler.set_epoch(epoch)
         loss_samples = torch.zeros(2).to(model.device)
         metrics = {}
-        for inputs, targets in timing_iterator(iterable=tqdm(train_loader, desc=f"Training epoch {epoch}", disable=rank>0, colour="blue", ncols=150), dict=metrics, key="timing/train/fetch"):
+        for inputs, targets in tqdm(train_loader, desc=f"Training epoch {epoch}", disable=rank>0, colour="blue", ncols=150):
             if single:
                 batch = batch.to(model.device)
-            with timing(dict=metrics, key="timing/train/zerograd"):
-                optimizer.zero_grad()
+            optimizer.zero_grad()
             if optim == 'adamw' or single:
-                with timing(dict=metrics, key="timing/train/forward"):
-                    loss = model(inputs, labels=targets).loss
-                with timing(dict=metrics, key="timing/train/backward"):
-                    loss.backward()
+                loss = model(inputs, labels=targets).loss
+                loss.backward()
             else:
                 with model.no_sync(): # Disable gradient replication for the backward pass
-                    with timing(dict=metrics, key="timing/train/forward"):
-                        loss = model(inputs, labels=targets).loss
-                    with timing(dict=metrics, key="timing/train/backward"):
-                        loss.backward()
-            with timing(dict=metrics, key="timing/train/optim"):
-                optimizer.step()
+                    loss = model(inputs, labels=targets).loss
+                    loss.backward()
+            optimizer.step()
             loss_samples[0] += loss.item()
             loss_samples[1] += len(inputs)
-            with timing(dict=metrics, key="timing/train/track"):
-                metrics.update({'train/loss': loss.item()})
-                aimrun.track(metrics)
+            metrics.update({'train/loss': loss.item()})
+            aimrun.track(metrics)
         # print training statistics
         if not single:
             dist.all_reduce(loss_samples, op=dist.ReduceOp.SUM)
@@ -95,15 +95,14 @@ def train(epochs, optim, single, model, train_loader, val_loader, optimizer, sch
         correct = 0
         total = 0
         with torch.no_grad():
-            for inputs, targets in timing_iterator(iterable=tqdm(val_loader, desc=f"Validating after epoch {epoch}", disable=rank>0, colour="green", ncols=150), dict=metrics, key='timing/val/fetch'):
+            for inputs, targets in tqdm(val_loader, desc=f"Validating after epoch {epoch}", disable=rank>0, colour="green", ncols=150):
                 inputs, targets = inputs.to(model.device), targets.to(model.device)
                 outputs = model(inputs, labels=targets)
                 loss = outputs.loss
                 loss_samples[0] += loss.item()
                 loss_samples[1] += len(inputs)
-                with timing(dict=metrics, key='timing/val/track'):
-                    metrics.update({'val/loss': loss.item()})
-                    aimrun.track(metrics)
+                metrics.update({'val/loss': loss.item()})
+                aimrun.track(metrics)
                 _, predicted = outputs.logits.max(1)
                 total += targets.size(0)
                 correct += predicted.eq(targets).sum().item()
@@ -121,12 +120,13 @@ def train(epochs, optim, single, model, train_loader, val_loader, optimizer, sch
             aimrun.track({'epoch/val/loss': val_loss}, step=epoch)
             aimrun.track({'epoch/val/accuracy': global_train_acc}, step=epoch)
         scheduler.step()
-    dist.barrier()
     dist.destroy_process_group()
     aimrun.close()
 
-def setup(dataset, batch_size, optim, optim_class, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards):
-    torch.manual_seed(42)
+def setup(dataset, batch_size, optim, compression_rate, compression_topk, compression_chunk, replicate_every, skip_every, device, single, shards, rand_seed):
+    if rand_seed is not None:
+        seed(rand_seed)
+
     config = ViTConfig(
         image_size=224,
         patch_size=16,
@@ -182,6 +182,8 @@ def setup(dataset, batch_size, optim, optim_class, compression_topk, compression
     elif optim.startswith('deto-'):
         if optim == 'deto-demo':
             replicator = DeMoReplicator(compression_topk=compression_topk, compression_chunk=compression_chunk)
+        elif optim == 'deto-random':
+            replicator = RandomReplicator(compression_rate=compression_rate, compression_chunk=compression_chunk, seed=rand_seed if rand_seed is not None else 42)
         elif optim == 'deto-full':
             replicator = FullReplicator()
         else:
