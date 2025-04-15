@@ -83,7 +83,7 @@ class RandomReplicator(Replicator):
 
         # Compress delta
         closest_chunk = self.__class__._get_smaller_split(len(delta), self.compression_chunk)
-        delta = delta.view(-1, closest_chunk)
+        delta = delta.view(closest_chunk, -1)
         selected_rows = self.permutations[delta.size(0)]
         compressed_grad = delta[selected_rows]
 
