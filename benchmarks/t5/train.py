@@ -39,22 +39,12 @@ from transformers.models.t5.modeling_t5 import T5Block
 @click.option('--dataset', default='WikiHow', type=click.Choice(['WikiHow', 'OpusBooks']), help='Dataset to train on.')
 def main(batch_size, epochs, optim, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards, rand_seed, train_samples, validation_samples, dataset):
     rank, nnodes, gpus = int(os.environ['RANK']), int(os.environ['NNODES']), int(os.environ['GPUS'])
-    aimrun.init(repo='.', experiment='t5', args={
-        'batch_size': batch_size,
-        'epochs': epochs,
+    run_args = click.get_current_context().params
+    run_args.update({
         'nnodes': nnodes,
         'gpus': gpus,
-        'optim': optim,
-        'model': model,
-        'comp_topk': compression_topk if optim=='deto-demo' else None,
-        'comp_chunk': compression_chunk if optim=='deto-demo' or optim=='deto-random' else None,
-        'comp_rate': compression_rate if optim=='deto-random' else None,
-        'rep_every': replicate_every,
-        'seed': rand_seed,
-        'train_samples': train_samples,
-        'val_samples': validation_samples,
-        'dataset': dataset,
     })
+    aimrun.init(repo='.', experiment='t5', args=run_args)
     if rank == 0:
         print(aimrun.get_runs()[0].hash)
     single = device in ('cpu', 'mps') or (device == 'cuda' and nnodes == gpus == 1)

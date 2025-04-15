@@ -42,6 +42,7 @@ class RandomReplicator(Replicator):
                 closest_chunk = self.__class__._get_smaller_split(len(p), self.compression_chunk)
                 self.sizes.add(p.view(-1, closest_chunk).size(0))
                 optim.state[p]["demo_delta"] = torch.zeros_like(p)
+        print(self.sizes)   # Print actually used chunk sizes
         self.replication_parallel_group = optim.replication_parallel_group if replication_parallel_group is None else replication_parallel_group
         self._replication_world_size = self.replication_parallel_group.size()
         self.data_transmitted = []

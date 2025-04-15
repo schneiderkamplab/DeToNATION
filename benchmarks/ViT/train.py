@@ -38,19 +38,12 @@ import torch.distributed as dist
 @click.option('--rand-seed', default=None, type=int, help="Seed for random generators in numpy and torch")
 def main(dataset, batch_size, epochs, optim, compression_rate, compression_topk, compression_chunk, replicate_every, skip_every, device, shards, rand_seed):
     rank, nnodes, gpus = int(os.environ['RANK']), int(os.environ['NNODES']), int(os.environ['GPUS'])
-    aimrun.init(repo='.', experiment='t5', args={
-        'batch_size': batch_size,
-        'epochs': epochs,
+    run_args = click.get_current_context().params
+    run_args.update({
         'nnodes': nnodes,
         'gpus': gpus,
-        'optim': optim,
-        'comp_topk': compression_topk if optim=='deto-demo' else None,
-        'comp_chunk': compression_chunk if optim=='deto-demo' else None,
-        'comp_rate': compression_rate if optim=='deto-random' else None,
-        'rep_every': replicate_every,
-        'seed': rand_seed,
-
     })
+    aimrun.init(repo='.', experiment='ViT', args=run_args)
     if rank == 0:
         print(aimrun.get_runs()[0].hash)
     single = device in ('cpu', 'mps') or (device == 'cuda' and nnodes == gpus == 1)
