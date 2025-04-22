@@ -25,6 +25,12 @@ dependencies = [
     'torch',
 ]
 
+[project.optional-dependencies]
+benchmarks = ["aimrun", "click", "datasets", "mltiming", "protobuf", "sentencepiece", "transformers"]
+examples = ["click", "datasets", "protobuf", "sentencepiece", "transformers"]
+dev = ["libcst"]]
+all = ["aimrun", "click", "datasets", "libcst", "mltiming", "protobuf", "sentencepiece", "transformers"]
+
 [project.urls]
 "Homepage" = "https://github.com/schneiderkamplab/DeToNATION"
 "Bug Tracker" = "https://github.com/schneiderkamplab/DeToNATION/issues"
