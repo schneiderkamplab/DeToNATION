@@ -3,12 +3,12 @@
 This implements DeMo replication for DeToNATION.
 """
 
-from .detonation import DeToNATION
+from .DeToSGD import DeToSGD
 from ..repl import DeMoReplicator
 
 __all__ = ["DeMo"]
 
-class DeMo(DeToNATION):
+class DeMo(DeToSGD):
 
     def __init__(
         self,
