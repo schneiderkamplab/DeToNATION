@@ -33,6 +33,10 @@ class StridingReplicator(Replicator):
         self._replication_world_size = self.replication_parallel_group.size()
         self.data_transmitted = []
         self.data_received = []
+        for group in optim.param_groups:
+            for p in group['params']:
+                if p.requires_grad:
+                    optim.state[p]["demo_delta"] = torch.zeros_like(p)
 
     def pre_step(self):
         self.data_transmit = 0
