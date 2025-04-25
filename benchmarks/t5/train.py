@@ -1,13 +1,14 @@
 import aimrun
 import click
 from datasets import load_dataset
-from detonation import DeMoReplicator, FullReplicator, NoReplicator, RandomReplicator, prepare_detonation
+from detonation import AdamWDeMoReplicator, DeMoReplicator, FullReplicator, NoReplicator, RandomReplicator, SlicingReplicator, StridingReplicator, prepare_detonation
 import functools
 import json
 from mltiming import timing_iterator, timing
 import numpy as np
 import os
 import random
+import subprocess
 import torch
 import torch.distributed as dist
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, MixedPrecision, ShardingStrategy
@@ -24,7 +25,7 @@ from transformers.models.t5.modeling_t5 import T5Block
 @click.command()
 @click.option('--batch-size', default=32, help='input batch size for training and validation (default: 32)')
 @click.option('--epochs', default=10, help='number of epochs to train (default: 10)')
-@click.option('--optim', default='deto-demo', type=click.Choice(['deto-demo', 'deto-full', 'deto-none', 'adamw', 'deto-random']))
+@click.option('--optim', default='deto-demo', type=click.Choice(['deto-demo', 'deto-full', 'deto-none', 'deto-adamw', 'adamw', 'deto-random', 'deto-slice', 'deto-stride']))
 @click.option('--compression-rate', default=0.1)
 @click.option('--compression-topk', default=2)
 @click.option('--compression-chunk', default=64)
@@ -39,10 +40,12 @@ from transformers.models.t5.modeling_t5 import T5Block
 @click.option('--dataset', default='WikiHow', type=click.Choice(['WikiHow', 'OpusBooks']), help='Dataset to train on.')
 def main(batch_size, epochs, optim, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards, rand_seed, train_samples, validation_samples, dataset):
     rank, nnodes, gpus = int(os.environ['RANK']), int(os.environ['NNODES']), int(os.environ['GPUS'])
+    git_hash = subprocess.getoutput('git rev-parse HEAD').strip()
     run_args = click.get_current_context().params
     run_args.update({
         'nnodes': nnodes,
         'gpus': gpus,
+        'git_hash': git_hash,
     })
     aimrun.init(repo='.', experiment='t5', args=run_args)
     if rank == 0:
@@ -86,10 +89,11 @@ def train(epochs, optim, single, model, train_loader, val_loader, optimizer, sch
             loss_samples[1] += len(batch)
             metrics.update({'train/loss': loss.item()})
             aimrun.track(metrics)
-        for i, replicator in enumerate(optimizer.replicators):
-            if hasattr(replicator, "data_transmitted"):
-                metrics[f"data_transmitted_gb_{i}"] = sum(replicator.data_transmitted)/2**30
-                metrics[f"data_received_gb_{i}"] = sum(replicator.data_received)/2**30
+        if not optim == 'adamw':
+            for i, replicator in enumerate(optimizer.replicators):
+                if hasattr(replicator, "data_transmitted"):
+                    metrics[f"data_transmitted_gb_{i}"] = sum(replicator.data_transmitted)/2**30
+                    metrics[f"data_received_gb_{i}"] = sum(replicator.data_received)/2**30
         metrics.clear()
         # print training statistics
         if not single:
@@ -159,6 +163,12 @@ def setup(batch_size, optim, compression_rate, compression_topk, compression_chu
             replicator = RandomReplicator(compression_rate=compression_rate, compression_chunk=compression_chunk, seed=rand_seed if rand_seed is not None else 42)
         elif optim == 'deto-full':
             replicator = FullReplicator()
+        elif optim == 'deto-adamw':
+            replicator = AdamWDeMoReplicator(compression_topk=compression_topk, compression_chunk=compression_chunk)
+        elif optim == 'deto-slice':
+            replicator = SlicingReplicator(compression_rate=compression_rate, compression_chunk=compression_chunk)
+        elif optim == 'deto-stride':
+            replicator = StridingReplicator(compression_rate=compression_rate, compression_chunk=compression_chunk)
         else:
             replicator = NoReplicator()
         model, optimizer = prepare_detonation(model, replicator, fsdp_kwargs={"auto_wrap_policy": auto_wrap_policy, "mixed_precision": mixed_precision}, replicate_every=replicate_every, skip_every=skip_every, sharding_group_size=shards)
