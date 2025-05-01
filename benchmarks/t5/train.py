@@ -39,6 +39,8 @@ from transformers.models.t5.modeling_t5 import T5Block
 @click.option('--validation-samples', default=3000, type=int, help="Number of smaples in the validation dataset")
 @click.option('--dataset', default='WikiHow', type=click.Choice(['WikiHow', 'OpusBooks']), help='Dataset to train on.')
 def main(batch_size, epochs, optim, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards, rand_seed, train_samples, validation_samples, dataset):
+    if optim == 'deto-slice':
+        raise Exception("The slicing replicator does not currently work.")
     rank, nnodes, gpus = int(os.environ['RANK']), int(os.environ['NNODES']), int(os.environ['GPUS'])
     git_hash = subprocess.getoutput('git rev-parse HEAD').strip()
     run_args = click.get_current_context().params
