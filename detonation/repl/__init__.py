@@ -6,3 +6,4 @@ from .replicator import *
 from .adamw_replicator import * 
 from .slicing_replicator import *
 from .striding_replicator import *
+from .adamw_random_replicator import *
