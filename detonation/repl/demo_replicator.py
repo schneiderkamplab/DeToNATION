@@ -40,7 +40,7 @@ class DeMoReplicator(Replicator):
                 if p.requires_grad:
                     optim.state[p]["demo_delta"] = torch.zeros_like(p)
         self.transform = DCTTransform(optim.param_groups, self.compression_chunk)
-        print(self.transform.shape_dict)    # Print actual chunk sizes
+        print('Actual chunk size in DeMo replication:', self.transform.shape_dict)    # Print actual chunk sizes
         self.replication_parallel_group = optim.replication_parallel_group if replication_parallel_group is None else replication_parallel_group
         self._replication_world_size = self.replication_parallel_group.size()
         self.data_transmitted = []
