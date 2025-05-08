@@ -1,7 +1,7 @@
 import aimrun
 import click
 from datasets import load_dataset
-from detonation import AdamWDeMoReplicator, DeMoReplicator, FullReplicator, NoReplicator, RandomReplicator, SlicingReplicator, StridingReplicator, prepare_detonation
+from detonation import AdamWDeMoReplicator, AdamWRandomReplicator, DeMoReplicator, FullReplicator, NoReplicator, RandomReplicator, SlicingReplicator, StridingReplicator, prepare_detonation
 import functools
 import json
 from mltiming import timing_iterator, timing
@@ -25,7 +25,7 @@ from transformers.models.t5.modeling_t5 import T5Block
 @click.command()
 @click.option('--batch-size', default=32, help='input batch size for training and validation (default: 32)')
 @click.option('--epochs', default=10, help='number of epochs to train (default: 10)')
-@click.option('--optim', default='deto-demo', type=click.Choice(['deto-demo', 'deto-full', 'deto-none', 'deto-adamw', 'adamw', 'deto-random', 'deto-slice', 'deto-stride']))
+@click.option('--optim', default='deto-demo', type=click.Choice(['deto-demo', 'deto-full', 'deto-none', 'deto-adamw', 'deto-rand-adamw', 'adamw', 'deto-random', 'deto-slice', 'deto-stride']))
 @click.option('--compression-rate', default=0.1)
 @click.option('--compression-topk', default=2)
 @click.option('--compression-chunk', default=64)
@@ -165,6 +165,8 @@ def setup(batch_size, optim, compression_rate, compression_topk, compression_chu
             replicator = FullReplicator()
         elif optim == 'deto-adamw':
             replicator = AdamWDeMoReplicator(compression_topk=compression_topk, compression_chunk=compression_chunk)
+        elif optim == 'deto-rand-adamw':
+            replicator = AdamWRandomReplicator(compression_rate=compression_rate, compression_chunk=compression_chunk, seed=rand_seed if rand_seed is not None else 42)
         elif optim == 'deto-slice':
             replicator = SlicingReplicator(compression_rate=compression_rate, compression_chunk=compression_chunk)
         elif optim == 'deto-stride':
