@@ -40,6 +40,7 @@ class DeToAdamW(AdamW, DeToNATIONMixin):
             replicate_every=replicate_every,
             skip_every=skip_every,
         )
+        print('Detonation sign: ', detonation_sign)
 
     @torch.no_grad()
     def step(self, closure: Callable | None = None):

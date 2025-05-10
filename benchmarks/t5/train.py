@@ -38,7 +38,8 @@ from transformers.models.t5.modeling_t5 import T5Block
 @click.option('--train-samples', default=15000, type=int, help="Number of smaples in the train dataset")
 @click.option('--validation-samples', default=3000, type=int, help="Number of smaples in the validation dataset")
 @click.option('--dataset', default='WikiHow', type=click.Choice(['WikiHow', 'OpusBooks']), help='Dataset to train on.')
-def main(batch_size, epochs, optim, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards, rand_seed, train_samples, validation_samples, dataset):
+@click.option('--sign', default=True, type=bool, help="Use sign of gradients or full values.")
+def main(batch_size, epochs, optim, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards, rand_seed, train_samples, validation_samples, dataset, sign):
     rank, nnodes, gpus = int(os.environ['RANK']), int(os.environ['NNODES']), int(os.environ['GPUS'])
     git_hash = subprocess.getoutput('git rev-parse HEAD').strip()
     run_args = click.get_current_context().params
@@ -51,7 +52,7 @@ def main(batch_size, epochs, optim, compression_rate, compression_topk, compress
     if rank == 0:
         print(aimrun.get_runs()[0].hash)
     single = device in ('cpu', 'mps') or (device == 'cuda' and nnodes == gpus == 1)
-    model_and_co = setup(batch_size, optim, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, train_samples, validation_samples, dataset)
+    model_and_co = setup(batch_size, optim, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, train_samples, validation_samples, dataset, sign)
     train(epochs, optim, single, *model_and_co)
 
 def seed(seed: int):
@@ -129,7 +130,7 @@ def train(epochs, optim, single, model, train_loader, val_loader, optimizer, sch
     dist.destroy_process_group()
     aimrun.close()
 
-def setup(batch_size, optim, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, train_samples, validation_samples, dataset):
+def setup(batch_size, optim, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, train_samples, validation_samples, dataset, detonation_sign):
     if rand_seed is not None:
         seed(rand_seed)
 
@@ -160,7 +161,7 @@ def setup(batch_size, optim, compression_rate, compression_topk, compression_chu
         if optim == 'deto-demo':
             replicator = DeMoReplicator(compression_topk=compression_topk, compression_chunk=compression_chunk)
         elif optim == 'deto-random':
-            replicator = RandomReplicator(compression_rate=compression_rate, compression_chunk=compression_chunk, seed=rand_seed if rand_seed is not None else 42)
+            replicator = RandomReplicator(compression_rate=compression_rate, seed=rand_seed if rand_seed is not None else 42)
         elif optim == 'deto-full':
             replicator = FullReplicator()
         elif optim == 'deto-adamw':
@@ -171,7 +172,7 @@ def setup(batch_size, optim, compression_rate, compression_topk, compression_chu
             replicator = StridingReplicator(compression_rate=compression_rate, compression_chunk=compression_chunk)
         else:
             replicator = NoReplicator()
-        model, optimizer = prepare_detonation(model, replicator, fsdp_kwargs={"auto_wrap_policy": auto_wrap_policy, "mixed_precision": mixed_precision}, replicate_every=replicate_every, skip_every=skip_every, sharding_group_size=shards)
+        model, optimizer = prepare_detonation(model, replicator, fsdp_kwargs={"auto_wrap_policy": auto_wrap_policy, "mixed_precision": mixed_precision}, replicate_every=replicate_every, skip_every=skip_every, sharding_group_size=shards, detonation_sign=detonation_sign)
     else:
         model = FSDP(model, auto_wrap_policy=auto_wrap_policy, mixed_precision=mixed_precision, device_id=int(os.environ['LOCAL_RANK']), sharding_strategy=ShardingStrategy.HYBRID_SHARD)
         optimizer = AdamW(model.parameters(), lr=1e-3, weight_decay=0.)
