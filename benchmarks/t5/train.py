@@ -38,19 +38,20 @@ from transformers.models.t5.modeling_t5 import T5Block
 @click.option('--dataset', default='OpusBooks', type=click.Choice(['WikiHow', 'OpusBooks']), help='Dataset to train on.')
 @click.option('--debug', default='False', type=bool, help="Enable debugging -> Limit dataset size.")
 @click.option('--sign', default=True, type=bool, help="Use sign of gradients or full values.")
-def main(batch_size, epochs, optim, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards, rand_seed, dataset, debug, sign):
-    rank, nnodes, gpu_per_node = int(os.environ['RANK']), int(os.environ['NNODES']), int(os.environ['SLURM_GPUS_PER_NODE'])
+@click.option('--dtype', defualt='', type=str, help='Meta for logging - only saves to Aim.')
+def main(batch_size, epochs, optim, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards, rand_seed, dataset, debug, sign, dtype):
+    rank, nnodes, gpu_per_node = int(os.environ['RANK']), int(os.environ['NNODES']), int(os.environ['GPUS'])
     git_hash = subprocess.getoutput('git rev-parse HEAD').strip()
     run_args = click.get_current_context().params
     run_args.update({
         'nnodes': nnodes,
-        'gpus': gpus,
+        'gpu_per_node': gpu_per_node,
         'git_hash': git_hash,
     })
     aimrun.init(repo='.', experiment='t5', args=run_args)
     if rank == 0:
         print(aimrun.get_runs()[0].hash)
-    single = device in ('cpu', 'mps') or (device == 'cuda' and nnodes == gpus == 1)
+    single = device in ('cpu', 'mps') or (device == 'cuda' and nnodes == gpu_per_node == 1)
     model_and_co = setup(batch_size, optim, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, dataset, debug, sign)
     train(epochs, optim, single, *model_and_co)
 
