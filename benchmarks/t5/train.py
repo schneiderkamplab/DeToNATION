@@ -37,7 +37,8 @@ from transformers.models.t5.modeling_t5 import T5Block
 @click.option('--rand-seed', default=None, type=int, help="Seed for random generators in numpy and torch")
 @click.option('--dataset', default='OpusBooks', type=click.Choice(['WikiHow', 'OpusBooks']), help='Dataset to train on.')
 @click.option('--debug', default='False', type=bool, help="Enable debugging -> Limit dataset size.")
-def main(batch_size, epochs, optim, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards, rand_seed, dataset, debug):
+@click.option('--sign', default=True, type=bool, help="Use sign of gradients or full values.")
+def main(batch_size, epochs, optim, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards, rand_seed, dataset, debug, sign):
     rank, nnodes, gpu_per_node = int(os.environ['RANK']), int(os.environ['NNODES']), int(os.environ['SLURM_GPUS_PER_NODE'])
     git_hash = subprocess.getoutput('git rev-parse HEAD').strip()
     run_args = click.get_current_context().params
@@ -50,7 +51,7 @@ def main(batch_size, epochs, optim, compression_rate, compression_topk, compress
     if rank == 0:
         print(aimrun.get_runs()[0].hash)
     single = device in ('cpu', 'mps') or (device == 'cuda' and nnodes == gpus == 1)
-    model_and_co = setup(batch_size, optim, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, dataset, debug)
+    model_and_co = setup(batch_size, optim, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, dataset, debug, sign)
     train(epochs, optim, single, *model_and_co)
 
 def seed(seed: int):
@@ -128,7 +129,7 @@ def train(epochs, optim, single, model, train_loader, val_loader, optimizer, sch
     dist.destroy_process_group()
     aimrun.close()
 
-def setup(batch_size, optim, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, dataset, debug):
+def setup(batch_size, optim, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, dataset, debug, detonation_sign):
     if rand_seed is not None:
         seed(rand_seed)
 
