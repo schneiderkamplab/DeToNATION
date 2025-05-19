@@ -1,6 +1,6 @@
 import click
 from datasets import load_dataset
-from detonation import DeMoReplicator, prepare_detonation
+from detonation import DeMoReplicator, Optimizers, prepare_detonation
 import functools
 import os
 import torch
@@ -75,7 +75,7 @@ def setup(batch_size):
     torch.cuda.set_device(int(os.environ['LOCAL_RANK']))
     auto_wrap_policy = functools.partial(transformer_auto_wrap_policy, transformer_layer_cls={T5Block})
     mixed_precision = MixedPrecision(param_dtype=torch.bfloat16, reduce_dtype=torch.bfloat16, buffer_dtype=torch.bfloat16) if torch.cuda.is_bf16_supported() else None
-    model, optimizer = prepare_detonation(model, DeMoReplicator(compression_topk=4), fsdp_kwargs={"auto_wrap_policy": auto_wrap_policy, "mixed_precision": mixed_precision})
+    model, optimizer = prepare_detonation(model, Optimizers.SGD, DeMoReplicator(compression_topk=4), fsdp_kwargs={"auto_wrap_policy": auto_wrap_policy, "mixed_precision": mixed_precision})
     scheduler = StepLR(optimizer, step_size=1, gamma=0.85)
     return model, train_loader, val_loader, optimizer, scheduler, train_sampler
 
