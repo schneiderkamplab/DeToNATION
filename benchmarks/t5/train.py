@@ -35,12 +35,10 @@ from transformers.models.t5.modeling_t5 import T5Block
 @click.option('--device', type=click.Choice(['cpu', 'cuda', 'mps']), default='cuda')
 @click.option('--shards', default=None, type=int, help="Number of shards per replication group (default: number of GPUs per node)")
 @click.option('--rand-seed', default=None, type=int, help="Seed for random generators in numpy and torch")
-@click.option('--train-samples', default=15000, type=int, help="Number of smaples in the train dataset")
-@click.option('--validation-samples', default=3000, type=int, help="Number of smaples in the validation dataset")
-@click.option('--dataset', default='WikiHow', type=click.Choice(['WikiHow', 'OpusBooks']), help='Dataset to train on.')
-@click.option('--sign', default=True, type=bool, help="Use sign of gradients or full values.")
-def main(batch_size, epochs, optim, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards, rand_seed, train_samples, validation_samples, dataset, sign):
-    rank, nnodes, gpus = int(os.environ['RANK']), int(os.environ['NNODES']), int(os.environ['GPUS'])
+@click.option('--dataset', default='OpusBooks', type=click.Choice(['WikiHow', 'OpusBooks']), help='Dataset to train on.')
+@click.option('--debug', default='False', type=bool, help="Enable debugging -> Limit dataset size.")
+def main(batch_size, epochs, optim, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards, rand_seed, dataset, debug):
+    rank, nnodes, gpu_per_node = int(os.environ['RANK']), int(os.environ['NNODES']), int(os.environ['SLURM_GPUS_PER_NODE'])
     git_hash = subprocess.getoutput('git rev-parse HEAD').strip()
     run_args = click.get_current_context().params
     run_args.update({
@@ -52,7 +50,7 @@ def main(batch_size, epochs, optim, compression_rate, compression_topk, compress
     if rank == 0:
         print(aimrun.get_runs()[0].hash)
     single = device in ('cpu', 'mps') or (device == 'cuda' and nnodes == gpus == 1)
-    model_and_co = setup(batch_size, optim, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, train_samples, validation_samples, dataset, sign)
+    model_and_co = setup(batch_size, optim, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, dataset, debug)
     train(epochs, optim, single, *model_and_co)
 
 def seed(seed: int):
@@ -130,7 +128,7 @@ def train(epochs, optim, single, model, train_loader, val_loader, optimizer, sch
     dist.destroy_process_group()
     aimrun.close()
 
-def setup(batch_size, optim, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, train_samples, validation_samples, dataset, detonation_sign):
+def setup(batch_size, optim, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, dataset, debug):
     if rand_seed is not None:
         seed(rand_seed)
 
@@ -140,12 +138,12 @@ def setup(batch_size, optim, compression_rate, compression_topk, compression_chu
     # prepare dataset
     if dataset == 'WikiHow':
         train_test_split = load_dataset("gursi26/wikihow-cleaned", split="train").train_test_split(test_size=0.2)
-        train_dataset = WikiHow(tokenizer, train_test_split['train'], num_samples=train_samples)
-        val_dataset = WikiHow(tokenizer, train_test_split['test'], num_samples=validation_samples)
+        train_dataset = WikiHow(tokenizer, debug, train_test_split['train'], num_debug_samples=15000)
+        val_dataset = WikiHow(tokenizer, debug, train_test_split['test'], num_debug_samples=3000)
     else:
         train_test_split = load_dataset("Helsinki-NLP/opus_books", "en-fr", split="train").train_test_split(test_size=0.2)
-        train_dataset = OpusBooks(tokenizer, train_test_split['train'], num_samples=train_samples)
-        val_dataset = OpusBooks(tokenizer, train_test_split['test'], num_samples=validation_samples)
+        train_dataset = OpusBooks(tokenizer, debug, train_test_split['train'], num_debug_samples=15000)
+        val_dataset = OpusBooks(tokenizer, debug, train_test_split['test'], num_debug_samples=3000)
     train_sampler = DistributedSampler(train_dataset, shuffle=True)
     train_loader = DataLoader(train_dataset, batch_size=batch_size, sampler=train_sampler)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, sampler=DistributedSampler(val_dataset))
@@ -181,8 +179,8 @@ def setup(batch_size, optim, compression_rate, compression_topk, compression_chu
     return model, train_loader, val_loader, optimizer, scheduler, train_sampler
 
 class OpusBooks(Dataset):
-    def __init__(self, tokenizer, dataset, num_samples):
-        self.dataset, self.tokenizer = dataset.select(list(range(0, num_samples))), tokenizer
+    def __init__(self, tokenizer, debug, dataset, num_debug_samples):
+        self.dataset, self.tokenizer = dataset.select(list(range(0, num_debug_samples))) if debug else dataset, tokenizer
 
     def __len__(self):
         return self.dataset.shape[0]
@@ -195,8 +193,8 @@ class OpusBooks(Dataset):
         return {"source_ids": source['input_ids'].squeeze(), "source_mask": source['attention_mask'].squeeze(), "target_ids": targets['input_ids'].squeeze(), "target_mask": targets['attention_mask'].squeeze()}
 
 class WikiHow(Dataset):
-    def __init__(self, tokenizer, dataset, num_samples):
-        self.dataset, self.tokenizer = dataset.select(list(range(0, num_samples))), tokenizer
+    def __init__(self, tokenizer, debug, dataset, num_debug_samples):
+        self.dataset, self.tokenizer = dataset.select(list(range(0, num_debug_samples))) if debug else dataset, tokenizer
     def __len__(self):
         return self.dataset.shape[0]
     def __getitem__(self, index):
