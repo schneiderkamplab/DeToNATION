@@ -56,8 +56,6 @@ def prepare_detonation(
         sharding_strategy=ShardingStrategy.HYBRID_SHARD,
         **fsdp_kwargs,
     )
-
-    print("OPTIMIZER: ", optimizer)
     match optimizer:
         case Optimizers.SGD:
             optim = DeToSGD(
