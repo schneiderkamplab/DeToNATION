@@ -26,8 +26,8 @@ from transformers.models.t5.modeling_t5 import T5Block
 @click.option('--batch-size', default=32, help='input batch size for training and validation (default: 32)')
 @click.option('--epochs', default=10, help='number of epochs to train (default: 10)')
 @click.option('--optim', default='deto-demo', type=click.Choice(['deto-demo', 'deto-full', 'deto-none', 'deto-adamw', 'adamw', 'deto-random', 'deto-slice', 'deto-stride']))
-@click.option('--compression-rate', default=0.1)
-@click.option('--compression-topk', default=2)
+@click.option('--compression-rate', default=0.0625)
+@click.option('--compression-topk', default=4)
 @click.option('--compression-chunk', default=64)
 @click.option('--model', default='google-t5/t5-small', type=click.Choice(['google-t5/t5-small', 'google-t5/t5-base', 'google-t5/t5-large']))
 @click.option('--replicate-every', default=1)
@@ -38,8 +38,10 @@ from transformers.models.t5.modeling_t5 import T5Block
 @click.option('--dataset', default='OpusBooks', type=click.Choice(['WikiHow', 'OpusBooks']), help='Dataset to train on.')
 @click.option('--debug', default='False', type=bool, help="Enable debugging -> Limit dataset size.")
 @click.option('--sign', default=True, type=bool, help="Use sign of gradients or full values.")
-@click.option('--dtype', defualt='', type=str, help='Meta for logging - only saves to Aim.')
-def main(batch_size, epochs, optim, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards, rand_seed, dataset, debug, sign, dtype):
+@click.option('--dtype', default='', type=click.STRING, help='Meta for logging - only saves to Aim.')
+@click.option('--comment', default='', type=click.STRING, help='String comment for aim.')
+@click.option('--cluster', default='', type=click.STRING, help='Specify compute resource for aim logging')
+def main(batch_size, epochs, optim, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards, rand_seed, dataset, debug, sign, dtype, comment, cluster):
     rank, nnodes, gpu_per_node = int(os.environ['RANK']), int(os.environ['NNODES']), int(os.environ['GPUS'])
     git_hash = subprocess.getoutput('git rev-parse HEAD').strip()
     run_args = click.get_current_context().params
