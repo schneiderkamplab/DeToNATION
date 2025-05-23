@@ -18,7 +18,7 @@ from transformers import ViTForImageClassification, ViTConfig
 from tqdm import tqdm
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import StepLR
-from detonation import DeMoReplicator, FullReplicator, NoReplicator, RandomReplicator, prepare_detonation
+from detonation import DeMoReplicator, FullReplicator, NoReplicator, RandomReplicator, prepare_detonation, Optimizers
 from transformers.models.vit.modeling_vit import ViTLayer
 import torch.distributed as dist
 
@@ -27,7 +27,8 @@ import torch.distributed as dist
 @click.option('--dataset', default='cifar100', type=click.Choice(['cifar10', 'cifar100']))
 @click.option('--batch-size', default=32, help='input batch size for training and validation (default: 32)')
 @click.option('--epochs', default=10, help='number of epochs to train (default: 10)')
-@click.option('--optim', default='deto-demo', type=click.Choice(['deto-demo', 'deto-full', 'deto-none', 'adamw', 'deto-random']))
+@click.option('--repl', '--replicator', default='deto-demo', type=click.Choice(['deto-demo', 'deto-full', 'deto-none', 'adamw', 'deto-random']))
+@click.option("--optimizer", "--optim",type=click.Choice([opt.value for opt in Optimizers], case_sensitive=False), default="sgd")
 @click.option('--compression-rate', default=0.1)
 @click.option('--compression-topk', default=2)
 @click.option('--compression-chunk', default=64)
@@ -36,8 +37,8 @@ import torch.distributed as dist
 @click.option('--device', type=click.Choice(['cpu', 'cuda', 'mps']), default='cuda')
 @click.option('--shards', default=None, type=int, help="Number of shards per replication group (default: number of GPUs per node)")
 @click.option('--rand-seed', default=None, type=int, help="Seed for random generators in numpy and torch")
-def main(dataset, batch_size, epochs, optim, compression_rate, compression_topk, compression_chunk, replicate_every, skip_every, device, shards, rand_seed):
-    rank, nnodes, gpus = int(os.environ['RANK']), int(os.environ['NNODES']), int(os.environ['GPUS'])
+def main(dataset, batch_size, epochs, repl, optimizer, compression_rate, compression_topk, compression_chunk, replicate_every, skip_every, device, shards, rand_seed):
+    rank, nnodes, gpus = int(os.environ['RANK']), int(os.environ['NNODES']), 4
     run_args = click.get_current_context().params
     run_args.update({
         'nnodes': nnodes,
@@ -47,8 +48,8 @@ def main(dataset, batch_size, epochs, optim, compression_rate, compression_topk,
     if rank == 0:
         print(aimrun.get_runs()[0].hash)
     single = device in ('cpu', 'mps') or (device == 'cuda' and nnodes == gpus == 1)
-    model_and_co = setup(dataset, batch_size, optim, compression_rate, compression_topk, compression_chunk, replicate_every, skip_every, device, single, shards, rand_seed)
-    train(epochs, optim, single, *model_and_co)
+    model_and_co = setup(dataset, batch_size, repl, optimizer, compression_rate, compression_topk, compression_chunk, replicate_every, skip_every, device, single, shards, rand_seed)
+    train(epochs, repl, single, *model_and_co)
 
 def seed(seed: int):
     random.seed(seed)
@@ -59,7 +60,7 @@ def seed(seed: int):
     elif torch.mps.is_available():
         torch.mps.manual_seed()
 
-def train(epochs, optim, single, model, train_loader, val_loader, optimizer, scheduler, train_sampler):
+def train(epochs, repl, single, model, train_loader, val_loader, optimizer, scheduler, train_sampler):
     rank = int(os.environ['RANK'])
     for epoch in range(1, epochs+1):
         model.train()
@@ -70,7 +71,7 @@ def train(epochs, optim, single, model, train_loader, val_loader, optimizer, sch
             if single:
                 batch = batch.to(model.device)
             optimizer.zero_grad()
-            if optim == 'adamw' or single:
+            if repl == 'adamw' or single:
                 loss = model(inputs, labels=targets).loss
                 loss.backward()
             else:
@@ -123,7 +124,7 @@ def train(epochs, optim, single, model, train_loader, val_loader, optimizer, sch
     dist.destroy_process_group()
     aimrun.close()
 
-def setup(dataset, batch_size, optim, compression_rate, compression_topk, compression_chunk, replicate_every, skip_every, device, single, shards, rand_seed):
+def setup(dataset, batch_size, repl, optimizer, compression_rate, compression_topk, compression_chunk, replicate_every, skip_every, device, single, shards, rand_seed):
     if rand_seed is not None:
         seed(rand_seed)
 
@@ -179,16 +180,17 @@ def setup(dataset, batch_size, optim, compression_rate, compression_topk, compre
     if single:
         model = model.to(device)
         optimizer = AdamW(model.parameters(), lr=1e-3, weight_decay=0.)
-    elif optim.startswith('deto-'):
-        if optim == 'deto-demo':
+    elif repl.startswith('deto-'):
+        if repl == 'deto-demo':
             replicator = DeMoReplicator(compression_topk=compression_topk, compression_chunk=compression_chunk)
-        elif optim == 'deto-random':
-            replicator = RandomReplicator(compression_rate=compression_rate, compression_chunk=compression_chunk, seed=rand_seed if rand_seed is not None else 42)
-        elif optim == 'deto-full':
+        elif repl == 'deto-random':
+            replicator = RandomReplicator(compression_rate=compression_rate, seed=rand_seed if rand_seed is not None else 42)
+        elif repl == 'deto-full':
             replicator = FullReplicator()
         else:
             replicator = NoReplicator()
-        model, optimizer = prepare_detonation(model, replicator, fsdp_kwargs={"auto_wrap_policy": auto_wrap_policy, "mixed_precision": mixed_precision}, replicate_every=replicate_every, skip_every=skip_every, sharding_group_size=shards)
+        opt_enum = Optimizers(optimizer.lower())
+        model, optimizer = prepare_detonation(model, opt_enum, replicator, fsdp_kwargs={"auto_wrap_policy": auto_wrap_policy, "mixed_precision": mixed_precision}, replicate_every=replicate_every, skip_every=skip_every, sharding_group_size=shards)
     optim = optimizer._optimizer if hasattr(optimizer, "_optimizer") else optimizer
     scheduler = StepLR(optim, step_size=1, gamma=0.85)
     return model, train_loader, val_loader, optimizer, scheduler, train_sampler
