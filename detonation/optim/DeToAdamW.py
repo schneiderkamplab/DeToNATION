@@ -2,6 +2,7 @@ import torch
 import torch.distributed as dist
 import torch.fft
 from torch.optim import AdamW
+from torch.optim.optimizer import _device_dtype_check_for_fused, _get_scalar_dtype
 from typing import Callable, List
 
 from ..detonatiomixin import DeToNATIONMixin
@@ -24,12 +25,42 @@ class DeToAdamW(AdamW, DeToNATIONMixin):
         *args,
         **kwargs,
     ):
-        AdamW.__init__(
-            self,
-            params,
-            *args,
-            **kwargs,
-        )
+        # Initialize AdamW base class
+        super().__init__(params, *args, **kwargs)
+        for group in self.param_groups:
+            amsgrad = group['amsgrad']
+            for p in group["params"]:
+                if p.requires_grad:
+                    self.state[p]["demo_delta"] = torch.zeros_like(p)
+
+                state = self.state[p]
+                if group["fused"]:
+                    _device_dtype_check_for_fused(p)
+                # note(crcrpar): Deliberately host `step` on CPU if both capturable and fused are off.
+                # This is because kernel launches are costly on CUDA and XLA.
+                state["step"] = (
+                    torch.zeros(
+                        (),
+                        dtype=_get_scalar_dtype(is_fused=group["fused"]),
+                        device=p.device,
+                    )
+                    if group["capturable"] or group["fused"]
+                    else torch.tensor(0.0, dtype=_get_scalar_dtype())
+                )
+                # Exponential moving average of gradient values
+                state["exp_avg"] = torch.zeros_like(
+                    p, memory_format=torch.preserve_format
+                )
+                # Exponential moving average of squared gradient values
+                state["exp_avg_sq"] = torch.zeros_like(
+                    p, memory_format=torch.preserve_format
+                )
+                if amsgrad:
+                    # Maintains max of all exp. moving avg. of sq. grad. values
+                    state["max_exp_avg_sq"] = torch.zeros_like(
+                        p, memory_format=torch.preserve_format
+                    )
+
         DeToNATIONMixin.__init__(
             self,
             detonation_weight_decay=detonation_weight_decay,

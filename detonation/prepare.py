@@ -7,13 +7,14 @@ from torch.distributed.fsdp import (
 )
 from typing import Optional, Tuple
 
-from .optim import DeToSGD, DeToAdamW
-from .repl import Replicator, DeMoReplicator, AdamWDeMoReplicator
+from .optim import DeToSGD, DeToAdamW, Optimizers
+from .repl import Replicator, DeMoReplicator
 
 __all__ = ["prepare_detonation"]
 
 def prepare_detonation(
     model: torch.nn.Module,
+    optimizer: Optimizers,
     replicator: Optional[Replicator] = DeMoReplicator(),
     sharding_group_size: Optional[int] = None,
     replication_group_size: Optional[int] = None,
@@ -55,20 +56,24 @@ def prepare_detonation(
         sharding_strategy=ShardingStrategy.HYBRID_SHARD,
         **fsdp_kwargs,
     )
-    if isinstance(replicator, AdamWDeMoReplicator):
-        optim = DeToAdamW(
-            model.parameters(),
-            replicator=replicator,
-            sharding_parallel_group=sharding_parallel_group,
-            replication_parallel_group=replication_parallel_group,
-            **detonation_kwargs,
-        )
-    else:
-        optim = DeToSGD(
-            model.parameters(),
-            replicator=replicator,
-            sharding_parallel_group=sharding_parallel_group,
-            replication_parallel_group=replication_parallel_group,
-            **detonation_kwargs,
-        )
+    match optimizer:
+        case Optimizers.SGD:
+            optim = DeToSGD(
+                model.parameters(),
+                replicator=replicator,
+                sharding_parallel_group=sharding_parallel_group,
+                replication_parallel_group=replication_parallel_group,
+                **detonation_kwargs,
+            )
+        case Optimizers.AdamW:
+            optim = DeToAdamW(
+                model.parameters(),
+                replicator=replicator,
+                sharding_parallel_group=sharding_parallel_group,
+                replication_parallel_group=replication_parallel_group,
+                **detonation_kwargs,
+            )
+        case _:
+            raise Exception("Optimizer not supported.")
+
     return model, optim
