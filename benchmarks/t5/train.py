@@ -25,12 +25,12 @@ from transformers.models.t5.modeling_t5 import T5Block
 @click.command()
 @click.option('--batch-size', default=32, help='input batch size for training and validation (default: 32)')
 @click.option('--epochs', default=10, help='number of epochs to train (default: 10)')
-@click.option('--repl', '--replicator', default='deto-demo', type=click.Choice(['deto-demo', 'deto-full', 'deto-none', 'adamw', 'deto-random', 'deto-slice', 'deto-stride']))
+@click.option('--replicator', '--repl', default='deto-demo', type=click.Choice(['deto-demo', 'deto-full', 'deto-none', 'adamw', 'deto-random', 'deto-slice', 'deto-stride']))
 @click.option("--optimizer", "--optim",type=click.Choice([opt.value for opt in Optimizers], case_sensitive=False), default="sgd")
 @click.option('--compression-rate', default=0.0625)
 @click.option('--compression-topk', default=4)
 @click.option('--compression-chunk', default=64)
-@click.option('--model', default='google-t5/t5-small', type=click.Choice(['google-t5/t5-small', 'google-t5/t5-base', 'google-t5/t5-large']))
+@click.option('--model', default='google-t5/t5-base', type=click.Choice(['google-t5/t5-small', 'google-t5/t5-base', 'google-t5/t5-large']))
 @click.option('--replicate-every', default=1)
 @click.option('--skip-every', default=None, type=int)
 @click.option('--device', type=click.Choice(['cpu', 'cuda', 'mps']), default='cuda')
@@ -39,11 +39,10 @@ from transformers.models.t5.modeling_t5 import T5Block
 @click.option('--dataset', default='OpusBooks', type=click.Choice(['WikiHow', 'OpusBooks']), help='Dataset to train on.')
 @click.option('--debug', default='False', type=bool, help="Enable debugging -> Limit dataset size.")
 @click.option('--sign', default=True, type=bool, help="Use sign of gradients or full values.")
-@click.option('--dtype', default='', type=click.STRING, help='Meta for logging - only saves to Aim.')
-@click.option('--comment', default='', type=click.STRING, help='String comment for aim.')
+@click.option('--description', default='', type=click.STRING, help='String comment for aim.')
 @click.option('--cluster', default='', type=click.STRING, help='Specify compute resource for aim logging')
-def main(batch_size, epochs, repl, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards, rand_seed, dataset, debug, sign, dtype, comment, cluster):
-    rank, nnodes, gpu_per_node = int(os.environ['RANK']), int(os.environ['NNODES']), int(os.environ['GPUS'])
+def main(batch_size, epochs, replicator, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards, rand_seed, dataset, debug, sign, description, cluster):
+    rank, nnodes, gpu_per_node = int(os.environ['RANK']), int(os.environ['NNODES']), torch.cuda.device_count()
     git_hash = subprocess.getoutput('git rev-parse HEAD').strip()
     run_args = click.get_current_context().params
     run_args.update({
@@ -51,12 +50,13 @@ def main(batch_size, epochs, repl, optimizer, compression_rate, compression_topk
         'gpu_per_node': gpu_per_node,
         'git_hash': git_hash,
     })
-    aimrun.init(repo='.', experiment='t5', args=run_args)
+    run_args.pop('description')
+    aimrun.init(repo='.', experiment='t5', description=description, args=run_args)
     if rank == 0:
-        print(aimrun.get_runs()[0].hash)
+        print('Aim hash: ', aimrun.get_runs()[0].hash)
     single = device in ('cpu', 'mps') or (device == 'cuda' and nnodes == gpu_per_node == 1)
-    model_and_co = setup(batch_size, repl, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, dataset, debug, sign)
-    train(epochs, repl, single, *model_and_co)
+    model_and_co = setup(batch_size, replicator, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, dataset, debug, sign)
+    train(epochs, replicator, single, *model_and_co)
 
 def seed(seed: int):
     random.seed(seed)
