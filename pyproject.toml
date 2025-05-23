@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "detonation"
-version = "0.4.0-beta"
+version = "0.5.0"
 authors = [
   { name = "Peter Schneider-Kamp" },
   { name = "Mogens Henrik From" }
