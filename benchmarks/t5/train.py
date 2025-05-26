@@ -195,7 +195,7 @@ class OpusBooks(Dataset):
         source = self.dataset[index]['translation']['en']
         target = self.dataset[index]['translation']['fr']
         source = self.tokenizer.batch_encode_plus([source], max_length=512, padding='max_length', truncation=True, return_tensors="pt")
-        targets = self.tokenizer.batch_encode_plus([target], max_length=150, padding='max_length', truncation=True, return_tensors="pt")
+        targets = self.tokenizer.batch_encode_plus([target], max_length=512, padding='max_length', truncation=True, return_tensors="pt")
         return {"source_ids": source['input_ids'].squeeze(), "source_mask": source['attention_mask'].squeeze(), "target_ids": targets['input_ids'].squeeze(), "target_mask": targets['attention_mask'].squeeze()}
 
 class WikiHow(Dataset):
