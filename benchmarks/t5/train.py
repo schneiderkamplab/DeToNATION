@@ -41,7 +41,8 @@ from transformers.models.t5.modeling_t5 import T5Block
 @click.option('--sign', default=True, type=bool, help="Use sign of gradients or full values.")
 @click.option('--description', default='', type=click.STRING, help='String comment for aim.')
 @click.option('--cluster', default='', type=click.STRING, help='Specify compute resource for aim logging')
-def main(batch_size, epochs, replicator, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards, rand_seed, dataset, debug, sign, description, cluster):
+@click.option('--lr', default=1e-3)
+def main(batch_size, epochs, replicator, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards, rand_seed, dataset, debug, sign, description, cluster, lr):
     if optimizer == 'deto-slice':
         raise Exception("The slicing replicator does not currently work.")
     rank, nnodes, gpu_per_node = int(os.environ['RANK']), int(os.environ['NNODES']), torch.cuda.device_count()
@@ -53,11 +54,11 @@ def main(batch_size, epochs, replicator, optimizer, compression_rate, compressio
         'git_hash': git_hash,
     })
     run_args.pop('description')
-    aimrun.init(repo='.', experiment='t5', description=description, args=run_args)
+    aimrun.init(repo='aim://157.180.90.29:53800', experiment='t5', description=description, args=run_args)
     if rank == 0:
         print('Aim hash: ', aimrun.get_runs()[0].hash)
     single = device in ('cpu', 'mps') or (device == 'cuda' and nnodes == gpu_per_node == 1)
-    model_and_co = setup(batch_size, replicator, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, dataset, debug, sign)
+    model_and_co = setup(batch_size, replicator, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, dataset, debug, sign, lr)
     train(epochs, replicator, single, *model_and_co)
 
 def seed(seed: int):
@@ -135,7 +136,7 @@ def train(epochs, repl, single, model, train_loader, val_loader, optimizer, sche
     dist.destroy_process_group()
     aimrun.close()
 
-def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, dataset, debug, detonation_sign):
+def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, dataset, debug, detonation_sign, lr):
     if rand_seed is not None:
         seed(rand_seed)
 
@@ -148,7 +149,8 @@ def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compr
         train_dataset = WikiHow(tokenizer, debug, train_test_split['train'], num_debug_samples=15000)
         val_dataset = WikiHow(tokenizer, debug, train_test_split['test'], num_debug_samples=3000)
     else:
-        train_test_split = load_dataset("Helsinki-NLP/opus_books", "en-fr", split="train").train_test_split(test_size=0.2)
+        train_test_split = load_dataset("opusbooks/", "default", split="train").train_test_split(test_size=0.2)
+        #train_test_split = load_dataset("Helsinki-NLP/opus_books", "en-fr", split="train").train_test_split(test_size=0.2)
         train_dataset = OpusBooks(tokenizer, debug, train_test_split['train'], num_debug_samples=15000)
         val_dataset = OpusBooks(tokenizer, debug, train_test_split['test'], num_debug_samples=3000)
     train_sampler = DistributedSampler(train_dataset, shuffle=True)
@@ -176,7 +178,7 @@ def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compr
         else:
             replicator = NoReplicator()
         opt_enum = Optimizers(optimizer.lower())
-        model, optimizer = prepare_detonation(model, opt_enum, replicator, fsdp_kwargs={"auto_wrap_policy": auto_wrap_policy, "mixed_precision": mixed_precision}, replicate_every=replicate_every, skip_every=skip_every, sharding_group_size=shards, detonation_sign=detonation_sign)
+        model, optimizer = prepare_detonation(model, opt_enum, replicator, fsdp_kwargs={"auto_wrap_policy": auto_wrap_policy, "mixed_precision": mixed_precision}, replicate_every=replicate_every, skip_every=skip_every, sharding_group_size=shards, detonation_sign=detonation_sign, lr=lr)
     else:
         model = FSDP(model, auto_wrap_policy=auto_wrap_policy, mixed_precision=mixed_precision, device_id=int(os.environ['LOCAL_RANK']), sharding_strategy=ShardingStrategy.HYBRID_SHARD)
         optimizer = AdamW(model.parameters(), lr=1e-3, weight_decay=0.)
