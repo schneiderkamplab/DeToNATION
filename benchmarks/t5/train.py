@@ -42,7 +42,8 @@ from transformers.models.t5.modeling_t5 import T5Block
 @click.option('--description', default='', type=click.STRING, help='String comment for aim.')
 @click.option('--cluster', default='', type=click.STRING, help='Specify compute resource for aim logging')
 @click.option('--lr', default=1e-3)
-def main(batch_size, epochs, replicator, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards, rand_seed, dataset, debug, sign, description, cluster, lr):
+@click.option('--accum', default=1, type=int, help='Number of gradient accumulation steps (default: 1)')
+def main(batch_size, epochs, replicator, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards, rand_seed, dataset, debug, sign, description, cluster, lr, accum):
     if optimizer == 'deto-slice':
         raise Exception("The slicing replicator does not currently work.")
     rank, nnodes, gpu_per_node = int(os.environ['RANK']), int(os.environ['NNODES']), torch.cuda.device_count()
@@ -59,7 +60,7 @@ def main(batch_size, epochs, replicator, optimizer, compression_rate, compressio
         print('Aim hash: ', aimrun.get_runs()[0].hash)
     single = device in ('cpu', 'mps') or (device == 'cuda' and nnodes == gpu_per_node == 1)
     model_and_co = setup(batch_size, replicator, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, dataset, debug, sign, lr)
-    train(epochs, replicator, single, *model_and_co)
+    train(epochs, replicator, single, accum, *model_and_co)
 
 def seed(seed: int):
     random.seed(seed)
@@ -70,7 +71,7 @@ def seed(seed: int):
     elif torch.mps.is_available():
         torch.mps.manual_seed()
 
-def train(epochs, repl, single, model, train_loader, val_loader, optimizer, scheduler, train_sampler, accum):
+def train(epochs, repl, single, accum, model, train_loader, val_loader, optimizer, scheduler, train_sampler):
     rank = int(os.environ['RANK'])
     for epoch in range(1, epochs+1):
         # train
