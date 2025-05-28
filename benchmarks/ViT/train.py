@@ -37,7 +37,8 @@ import torch.distributed as dist
 @click.option('--device', type=click.Choice(['cpu', 'cuda', 'mps']), default='cuda')
 @click.option('--shards', default=None, type=int, help="Number of shards per replication group (default: number of GPUs per node)")
 @click.option('--rand-seed', default=None, type=int, help="Seed for random generators in numpy and torch")
-def main(dataset, batch_size, epochs, repl, optimizer, compression_rate, compression_topk, compression_chunk, replicate_every, skip_every, device, shards, rand_seed):
+@click.option('--accum', default=1, type=int, help='Number of gradient accumulation steps (default: 1)')
+def main(dataset, batch_size, epochs, repl, optimizer, compression_rate, compression_topk, compression_chunk, replicate_every, skip_every, device, shards, rand_seed, accum):
     rank, nnodes, gpus = int(os.environ['RANK']), int(os.environ['NNODES']), 4
     run_args = click.get_current_context().params
     run_args.update({
@@ -49,7 +50,7 @@ def main(dataset, batch_size, epochs, repl, optimizer, compression_rate, compres
         print(aimrun.get_runs()[0].hash)
     single = device in ('cpu', 'mps') or (device == 'cuda' and nnodes == gpus == 1)
     model_and_co = setup(dataset, batch_size, repl, optimizer, compression_rate, compression_topk, compression_chunk, replicate_every, skip_every, device, single, shards, rand_seed)
-    train(epochs, repl, single, *model_and_co)
+    train(epochs, repl, single, accum, *model_and_co)
 
 def seed(seed: int):
     random.seed(seed)
@@ -60,7 +61,7 @@ def seed(seed: int):
     elif torch.mps.is_available():
         torch.mps.manual_seed()
 
-def train(epochs, repl, single, model, train_loader, val_loader, optimizer, scheduler, train_sampler, accum):
+def train(epochs, repl, single, accum, model, train_loader, val_loader, optimizer, scheduler, train_sampler, accum):
     rank = int(os.environ['RANK'])
     for epoch in range(1, epochs+1):
         model.train()
