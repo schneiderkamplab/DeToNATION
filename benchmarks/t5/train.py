@@ -55,7 +55,7 @@ def main(batch_size, epochs, replicator, optimizer, compression_rate, compressio
         'git_hash': git_hash,
     })
     run_args.pop('description')
-    aimrun.init(repo='aim://157.180.90.29:53800', experiment='t5', description=description, args=run_args)
+    aimrun.init(repo='.', experiment='t5', description=description, args=run_args)
     if rank == 0:
         print('Aim hash: ', aimrun.get_runs()[0].hash)
     single = device in ('cpu', 'mps') or (device == 'cuda' and nnodes == gpu_per_node == 1)
