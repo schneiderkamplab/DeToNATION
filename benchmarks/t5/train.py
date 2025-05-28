@@ -69,7 +69,7 @@ def seed(seed: int):
     elif torch.mps.is_available():
         torch.mps.manual_seed()
 
-def train(epochs, repl, single, model, train_loader, val_loader, optimizer, scheduler, train_sampler):
+def train(epochs, repl, single, model, train_loader, val_loader, optimizer, scheduler, train_sampler, accum):
     rank = int(os.environ['RANK'])
     for epoch in range(1, epochs+1):
         # train
@@ -77,12 +77,16 @@ def train(epochs, repl, single, model, train_loader, val_loader, optimizer, sche
         train_sampler.set_epoch(epoch)
         loss_samples = torch.zeros(2).to(model.device)
         metrics = {}
-        for batch in tqdm(train_loader, desc=f"Training epoch {epoch}", disable=rank>0, colour="blue", ncols=150):
+        for i, batch in enumerate(tqdm(train_loader, desc=f"Training epoch {epoch}", disable=rank>0, colour="blue", ncols=150)):
             if single:
                 batch["source_ids"] = batch["source_ids"].to(model.device)
                 batch["source_mask"] = batch["source_mask"].to(model.device)
                 batch["target_ids"] = batch["target_ids"].to(model.device)
-            optimizer.zero_grad()
+            
+            if (i+1) % accum == 0:             
+                optimizer.step()                          
+                optimizer.zero_grad()
+
             if repl == single: # 'adamw'
                 loss = model(input_ids=batch["source_ids"],attention_mask=batch["source_mask"],labels=batch["target_ids"] )["loss"]
                 loss.backward()
