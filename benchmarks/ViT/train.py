@@ -37,7 +37,7 @@ import torch.distributed as dist
 @click.option('--device', type=click.Choice(['cpu', 'cuda', 'mps']), default='cuda')
 @click.option('--shards', default=None, type=int, help="Number of shards per replication group (default: number of GPUs per node)")
 @click.option('--rand-seed', default=None, type=int, help="Seed for random generators in numpy and torch")
-@click.option('--accum', default=1, type=int, help='Number of gradient accumulation steps (default: 1)')
+@click.option('--accum', default=2, type=int, help='Number of gradient accumulation steps (default: 1)')
 def main(dataset, batch_size, epochs, repl, optimizer, compression_rate, compression_topk, compression_chunk, replicate_every, skip_every, device, shards, rand_seed, accum):
     rank, nnodes, gpus = int(os.environ['RANK']), int(os.environ['NNODES']), 4
     run_args = click.get_current_context().params
@@ -61,7 +61,7 @@ def seed(seed: int):
     elif torch.mps.is_available():
         torch.mps.manual_seed()
 
-def train(epochs, repl, single, accum, model, train_loader, val_loader, optimizer, scheduler, train_sampler, accum):
+def train(epochs, repl, single, accum, model, train_loader, val_loader, optimizer, scheduler, train_sampler):
     rank = int(os.environ['RANK'])
     for epoch in range(1, epochs+1):
         model.train()
@@ -70,8 +70,7 @@ def train(epochs, repl, single, accum, model, train_loader, val_loader, optimize
         metrics = {}
         for i, (inputs, targets) in enumerate(tqdm(train_loader, desc=f"Training epoch {epoch}", disable=rank>0, colour="blue", ncols=150)):
             if single:
-                batch = batch.to(model.device)
-            optimizer.zero_grad()
+                batch = batch.to(model.device)            
             if repl == 'adamw' or single:
                 loss = model(inputs, labels=targets).loss
                 loss.backward()
@@ -79,11 +78,9 @@ def train(epochs, repl, single, accum, model, train_loader, val_loader, optimize
                 with model.no_sync(): # Disable gradient replication for the backward pass
                     loss = model(inputs, labels=targets).loss
                     loss.backward()
-            
             if (i+1) % accum == 0:             
                 optimizer.step()                          
                 optimizer.zero_grad()
-            
             loss_samples[0] += loss.item()
             loss_samples[1] += len(inputs)
             metrics.update({'train/loss': loss.item()})
