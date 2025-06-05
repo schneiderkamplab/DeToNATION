@@ -43,7 +43,8 @@ from transformers.models.t5.modeling_t5 import T5Block
 @click.option('--cluster', default='', type=click.STRING, help='Specify compute resource for aim logging')
 @click.option('--lr', default=1e-3)
 @click.option('--accum', default=1, type=int, help='Number of gradient accumulation steps (default: 1)')
-def main(batch_size, epochs, replicator, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards, rand_seed, dataset, debug, sign, description, cluster, lr, accum):
+@click.option('--avg', default=False)
+def main(batch_size, epochs, replicator, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards, rand_seed, dataset, debug, sign, description, cluster, lr, accum, avg):
     if optimizer == 'deto-slice':
         raise Exception("The slicing replicator does not currently work.")
     rank, nnodes, gpu_per_node = int(os.environ['RANK']), int(os.environ['NNODES']), torch.cuda.device_count()
@@ -55,7 +56,7 @@ def main(batch_size, epochs, replicator, optimizer, compression_rate, compressio
         'git_hash': git_hash,
     })
     run_args.pop('description')
-    aimrun.init(repo='.', experiment='t5', description=description, args=run_args)
+    aimrun.init(repo='aim://157.180.90.29:53800', experiment='t5', description=description, args=run_args)
     if rank == 0:
         print('Aim hash: ', aimrun.get_runs()[0].hash)
     single = device in ('cpu', 'mps') or (device == 'cuda' and nnodes == gpu_per_node == 1)
@@ -84,10 +85,6 @@ def train(epochs, repl, single, accum, model, train_loader, val_loader, optimize
                 batch["source_ids"] = batch["source_ids"].to(model.device)
                 batch["source_mask"] = batch["source_mask"].to(model.device)
                 batch["target_ids"] = batch["target_ids"].to(model.device)
-            
-            if (i+1) % accum == 0:             
-                optimizer.step()                          
-                optimizer.zero_grad()
 
             if repl == single: # 'adamw'
                 loss = model(input_ids=batch["source_ids"],attention_mask=batch["source_mask"],labels=batch["target_ids"] )["loss"]
@@ -95,8 +92,11 @@ def train(epochs, repl, single, accum, model, train_loader, val_loader, optimize
             else:
                 with model.no_sync(): # Disable gradient replication for the backward pass
                     loss = model(input_ids=batch["source_ids"],attention_mask=batch["source_mask"],labels=batch["target_ids"] )["loss"]
+                    loss = loss / accum
                     loss.backward()
-            optimizer.step()
+            if (i+1) % accum == 0:             
+                optimizer.step()                          
+                optimizer.zero_grad()
             loss_samples[0] += loss.item()
             loss_samples[1] += len(batch)
             metrics.update({'train/loss': loss.item()})
