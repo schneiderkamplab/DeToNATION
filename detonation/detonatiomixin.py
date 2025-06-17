@@ -101,14 +101,22 @@ class DeToNATIONMixin():
                         (self.state["detonation_step"] % replicate_every == 0) and
                         (skip_every is None or (self.state["detonation_step"] % skip_every != 0))
                     ):
-                        new_grad = replicator.replicate(
+                        maybe_new_grad = replicator.replicate(
                             sharded_grad=sharded_grad,
                             param=param,
                             param_state_dict=self.state[param],
                             param_group=group,
                         )
+                        # print("MAYBE_NEW_GRAD: ", maybe_new_grad)
+                        if maybe_new_grad == None:
+                            new_grad = sharded_grad.to(param.device).to(param.dtype)
+                        else:
+                            # maybe new grad can be none
+                            new_grad = maybe_new_grad
                     else:
                         new_grad = sharded_grad.to(param.device).to(param.dtype)
+
+                # TODO: Change to check if a grad is available
                 param.grad = new_grad
 
                 # Sign-SGD
