@@ -1,5 +1,6 @@
 import os
 import torch
+import torch.distributed as dist
 from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed.fsdp import (
     FullyShardedDataParallel as FSDP,
@@ -18,12 +19,13 @@ def prepare_detonation(
     replicator: Optional[Replicator] = DeMoReplicator(),
     sharding_group_size: Optional[int] = None,
     replication_group_size: Optional[int] = None,
-    sharding_parallel_group: Optional[torch.distributed.ProcessGroup] = None,
-    replication_parallel_group: Optional[torch.distributed.ProcessGroup] = None,
+    sharding_parallel_group: Optional[torch.distributed.ProcessGroup] = None, # intra-node
+    replication_parallel_group: Optional[torch.distributed.ProcessGroup] = None, # inter-noder
     fsdp_kwargs: dict = {},
     **detonation_kwargs,
 ) -> Tuple[torch.nn.Module, torch.optim.Optimizer]:
     world_size = int(os.environ['WORLD_SIZE'])
+    rank = int(os.environ['RANK'])
     local_world_size = int(os.environ['LOCAL_WORLD_SIZE'])
     if (sharding_parallel_group is None) ^ (replication_parallel_group is None):
         raise ValueError("Cannot specify only one of replication_parallel_group and sharding_parallel_group")
@@ -49,6 +51,9 @@ def prepare_detonation(
         replication_parallel_group = mesh_2d.get_group(0)
     assert world_size == sharding_group_size * replication_group_size
     assert local_world_size % sharding_group_size == 0
+
+    print(f"{rank}: Setting up CPU backend")
+    replication_parallel_group = dist.new_group(ranks=dist.get_process_group_ranks(replication_parallel_group), backend='gloo', group_desc="CPU")    
     model = FSDP(
         model,
         process_group=(sharding_parallel_group, replication_parallel_group),

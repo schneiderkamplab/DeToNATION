@@ -89,7 +89,7 @@ class DeToNATIONMixin():
                 # Sharding gradient if needed
                 unsharded_grad = param.grad.data
                 param.grad = None
-                sharded_grad = self._grad_reduce_scatter(unsharded_grad)
+                sharded_grad = self._grad_reduce_scatter(unsharded_grad) # Intra-Node, shard gathering 
 
                 # Step-Weight decay
                 if self.detonation_weight_decay != 0.0:
@@ -107,7 +107,6 @@ class DeToNATIONMixin():
                             param_state_dict=self.state[param],
                             param_group=group,
                         )
-                        # print("MAYBE_NEW_GRAD: ", maybe_new_grad)
                         if maybe_new_grad == None:
                             new_grad = sharded_grad.to(param.device).to(param.dtype)
                         else:
@@ -116,7 +115,6 @@ class DeToNATIONMixin():
                     else:
                         new_grad = sharded_grad.to(param.device).to(param.dtype)
 
-                # TODO: Change to check if a grad is available
                 param.grad = new_grad
 
                 # Sign-SGD

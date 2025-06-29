@@ -23,7 +23,7 @@ from transformers.models.t5.modeling_t5 import T5Block
 
 
 @click.command()
-@click.option('--batch-size', default=32, help='input batch size for training and validation (default: 32)')
+@click.option('--batch-size', default=1, help='input batch size for training and validation (default: 32)')
 @click.option('--epochs', default=10, help='number of epochs to train (default: 10)')
 @click.option('--replicator', '--repl', default='deto-demo', type=click.Choice(['deto-demo', 'deto-full', 'deto-none', 'adamw', 'deto-random', 'deto-slice', 'deto-stride']))
 @click.option("--optimizer", "--optim",type=click.Choice([opt.value for opt in Optimizers], case_sensitive=False), default="sgd")
@@ -141,7 +141,6 @@ def train(epochs, repl, single, accum, model, train_loader, val_loader, optimize
 def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, dataset, debug, detonation_sign, lr):
     if rand_seed is not None:
         seed(rand_seed)
-
     # prepare model
     tokenizer =  T5Tokenizer.from_pretrained(model, legacy=False)
     model = T5ForConditionalGeneration(T5Config.from_pretrained(model))
