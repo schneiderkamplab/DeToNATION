@@ -53,10 +53,26 @@ class DeToNATIONMixin():
         for replicator, replication_parallel_group in zip(self.replicators, self.replication_parallel_groups):
             replicator.init(self, replication_parallel_group=replication_parallel_group)
 
+    def hook_grad_reduce_scatter(self, param: torch.Tensor, group):
+        def hook(grad):
+            # Any step-wise initialization needed by the replicator
+            for replicator in self.replicators:
+                replicator.pre_step()
+
+            # Sharding gradient if needed
+            unsharded_grad = grad.data
+            param.grad = None
+            work_handle, sharded_output = self._grad_reduce_scatter(unsharded_grad)  
+
+            param.work_handle = work_handle
+            param.reduced_grad = sharded_output
+            return torch.zeros_like(unsharded_grad) # dummy grad for auto-grad
+        return hook
+
     def _grad_reduce_scatter(self, grad: torch.Tensor):
         # Do not reduce_scatter if the gradient is not sharded
         if self._sharding_world_size == 1:
-            return grad
+            return None, grad
 
         # Chunk and pad the unsharded gradient
         chunks = list(grad.chunk(self._sharding_world_size))
@@ -65,36 +81,35 @@ class DeToNATIONMixin():
 
         # Prepare and scatter the sharded gradient
         sharded_grad = torch.empty_like(chunks[0])
-        dist.reduce_scatter_tensor(
+        work = dist.reduce_scatter_tensor(
             sharded_grad,
             padded_unsharded_grad,
             op=dist.ReduceOp.AVG,
             group=self.sharding_parallel_group,
+            async_op=True,
         )
-        return sharded_grad
+        return work, sharded_grad
 
     def step(self, closure: Callable | None = None, base_step: torch.optim.Optimizer.step = None):
         self.state["detonation_step"] += 1
-
-        # Any step-wise initialization needed by the replicator
-        for replicator in self.replicators:
-            replicator.pre_step()
-
         for group in self.param_groups:
             lr = group["lr"]
             for param in group["params"]:
                 if not param.requires_grad:
                     continue
-                
-                # Sharding gradient if needed
-                unsharded_grad = param.grad.data
-                param.grad = None
-                sharded_grad = self._grad_reduce_scatter(unsharded_grad)
 
                 # Step-Weight decay
                 if self.detonation_weight_decay != 0.0:
                     param.data.mul_(1.0 - lr * self.weight_decay)
 
+                if hasattr(param, "work_handle") and param.work_handle is not None: # can be none when |S| = 1
+                    param.work_handle.wait()
+                    param.grad = param.reduced_grad.to(param.dtype)
+                    
+                    del param.work_handle
+                    del param.reduced_grad
+                
+                sharded_grad = param.grad
                 # Replicating the gradient if needed
                 for replicate_every, skip_every, replicator in zip(self.replicate_everys, self.skip_everys, self.replicators):
                     if (
