@@ -30,7 +30,7 @@ from transformers.models.t5.modeling_t5 import T5Block
 @click.option('--compression-rate', default=0.0625)
 @click.option('--compression-topk', default=4)
 @click.option('--compression-chunk', default=64)
-@click.option('--model', default='google-t5/t5-base', type=click.Choice(['google-t5/t5-small', 'google-t5/t5-base', 'google-t5/t5-large']))
+@click.option('--model', default='google-t5/t5-small', type=click.Choice(['google-t5/t5-small', 'google-t5/t5-base', 'google-t5/t5-large']))
 @click.option('--replicate-every', default=1)
 @click.option('--skip-every', default=None, type=int)
 @click.option('--device', type=click.Choice(['cpu', 'cuda', 'mps']), default='cuda')
@@ -85,7 +85,6 @@ def train(epochs, repl, single, accum, model, train_loader, val_loader, optimize
                 batch["source_ids"] = batch["source_ids"].to(model.device)
                 batch["source_mask"] = batch["source_mask"].to(model.device)
                 batch["target_ids"] = batch["target_ids"].to(model.device)
-
             if repl == single: # 'adamw'
                 loss = model(input_ids=batch["source_ids"],attention_mask=batch["source_mask"],labels=batch["target_ids"] )["loss"]
                 loss.backward()
@@ -154,8 +153,7 @@ def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compr
         train_dataset = WikiHow(tokenizer, debug, train_test_split['train'], num_debug_samples=15000)
         val_dataset = WikiHow(tokenizer, debug, train_test_split['test'], num_debug_samples=3000)
     else:
-        train_test_split = load_dataset("opusbooks/", "default", split="train").train_test_split(test_size=0.2)
-        #train_test_split = load_dataset("Helsinki-NLP/opus_books", "en-fr", split="train").train_test_split(test_size=0.2)
+        train_test_split = load_dataset("Helsinki-NLP/opus_books", "en-fr", split="train").train_test_split(test_size=0.2)
         train_dataset = OpusBooks(tokenizer, debug, train_test_split['train'], num_debug_samples=15000)
         val_dataset = OpusBooks(tokenizer, debug, train_test_split['test'], num_debug_samples=3000)
     train_sampler = DistributedSampler(train_dataset, shuffle=True)
@@ -168,7 +166,7 @@ def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compr
     mixed_precision = MixedPrecision(param_dtype=torch.bfloat16, reduce_dtype=torch.bfloat16, buffer_dtype=torch.bfloat16) if torch.cuda.is_bf16_supported() else None
     if single:
         model = model.to(device)
-        optimizer = AdamW(model.parameters(), lr=1e-3, weight_decay=0.)
+        optimizer = AdamW(model.parameters(), lr=lr, weight_decay=0.)
     elif repl.startswith('deto-'):
         if repl == 'deto-demo':
             replicator = DeMoReplicator(compression_topk=compression_topk, compression_chunk=compression_chunk)
@@ -186,7 +184,7 @@ def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compr
         model, optimizer = prepare_detonation(model, opt_enum, replicator, fsdp_kwargs={"auto_wrap_policy": auto_wrap_policy, "mixed_precision": mixed_precision}, replicate_every=replicate_every, skip_every=skip_every, sharding_group_size=shards, detonation_sign=detonation_sign, lr=lr)
     else:
         model = FSDP(model, auto_wrap_policy=auto_wrap_policy, mixed_precision=mixed_precision, device_id=int(os.environ['LOCAL_RANK']), sharding_strategy=ShardingStrategy.HYBRID_SHARD)
-        optimizer = AdamW(model.parameters(), lr=1e-3, weight_decay=0.)
+        optimizer = AdamW(model.parameters(), lr=lr, weight_decay=0.)
     optim = optimizer._optimizer if hasattr(optimizer, "_optimizer") else optimizer
     scheduler = StepLR(optim, step_size=1, gamma=0.85)
     return model, train_loader, val_loader, optimizer, scheduler, train_sampler

@@ -85,7 +85,7 @@ class DeToNATIONMixin():
             for param in group["params"]:
                 if not param.requires_grad:
                     continue
-
+                
                 # Sharding gradient if needed
                 unsharded_grad = param.grad.data
                 param.grad = None

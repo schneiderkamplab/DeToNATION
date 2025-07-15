@@ -54,7 +54,10 @@ def main(dataset, batch_size, epochs, replicator, optimizer, compression_rate, c
         'git_hash': git_hash,
     })
     run_args.pop('description')
-    aimrun.init(repo='aim://157.180.90.29:53800', experiment='ViT', description=description, args=run_args)
+    aimrun.init(repo='.', experiment='ViT', description=description, args=run_args)
+    if rank == 0:
+        print('Aim hash: ', aimrun.get_runs()[0].hash)
+    single = device in ('cpu', 'mps') or (device == 'cuda' and nnodes == gpu_per_node == 1)
     if rank == 0:
         print(aimrun.get_runs()[0].hash)
     single = device in ('cpu', 'mps') or (device == 'cuda' and nnodes == gpu_per_node == 1)
@@ -79,8 +82,7 @@ def train(epochs, repl, single, accum, model, train_loader, val_loader, optimize
         metrics = {}
         for i, (inputs, targets) in enumerate(tqdm(train_loader, desc=f"Training epoch {epoch}", disable=rank>0, colour="blue", ncols=150)):
             if single:
-                batch = batch.to(model.device)
-            optimizer.zero_grad()
+                batch = batch.to(model.device)            
             if repl == 'adamw' or single:
                 loss = model(inputs, labels=targets).loss
                 loss.backward()
@@ -88,11 +90,9 @@ def train(epochs, repl, single, accum, model, train_loader, val_loader, optimize
                 with model.no_sync(): # Disable gradient replication for the backward pass
                     loss = model(inputs, labels=targets).loss
                     loss.backward()
-            
             if (i+1) % accum == 0:             
                 optimizer.step()                          
                 optimizer.zero_grad()
-            
             loss_samples[0] += loss.item()
             loss_samples[1] += len(inputs)
             metrics.update({'train/loss': loss.item()})
@@ -194,7 +194,7 @@ def setup(dataset, batch_size, repl, optimizer, compression_rate, compression_to
     mixed_precision = MixedPrecision(param_dtype=torch.bfloat16, reduce_dtype=torch.bfloat16, buffer_dtype=torch.bfloat16) if torch.cuda.is_bf16_supported() else None
     if single:
         model = model.to(device)
-        optimizer = AdamW(model.parameters(), lr=1e-3, weight_decay=0.)
+        optimizer = AdamW(model.parameters(), lr=lr, weight_decay=0.)
     elif repl.startswith('deto-'):
         if repl == 'deto-demo':
             replicator = DeMoReplicator(compression_topk=compression_topk, compression_chunk=compression_chunk)
