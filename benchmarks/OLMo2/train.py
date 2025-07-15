@@ -18,7 +18,7 @@ from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
-from olmo.modeling_olmo import OLMoDecoderLayer
+from olmo_core.nn.transformer.block import TransformerBlock
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 @click.command()
@@ -29,13 +29,13 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 @click.option('--compression-rate', default=0.0625)
 @click.option('--compression-topk', default=4)
 @click.option('--compression-chunk', default=64)
-@click.option('--model', default='google-t5/t5-small', type=click.Choice(['google-t5/t5-small', 'google-t5/t5-base', 'google-t5/t5-large']))
+@click.option('--model', default='allenai/OLMo-1B', type=click.Choice(['allenai/OLMo-1B', 'allenai/OLMo-7B']))
 @click.option('--replicate-every', default=1)
 @click.option('--skip-every', default=None, type=int)
 @click.option('--device', type=click.Choice(['cpu', 'cuda', 'mps']), default='cuda')
 @click.option('--shards', default=None, type=int, help="Number of shards per replication group (default: number of GPUs per node)")
 @click.option('--rand-seed', default=None, type=int, help="Seed for random generators in numpy and torch")
-@click.option('--dataset', default='ai2/dolma-v1', type=click.Choice(['ai2/dolma-v1']), help='Dataset to train on.')
+@click.option('--dataset', default='allenai/dolma', type=click.Choice(['allenai/dolma']), help='Dataset to train on.')
 @click.option('--debug', default='False', type=bool, help="Enable debugging -> Limit dataset size.")
 @click.option('--sign', default=True, type=bool, help="Use sign of gradients or full values.")
 @click.option('--description', default='', type=click.STRING, help='String comment for aim.')
@@ -142,18 +142,21 @@ def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compr
         seed(rand_seed)
 
     # Load tokenizer and model
-    tokenizer = AutoTokenizer.from_pretrained("allenai/OLMo-7B", use_fast=True)
+    tokenizer = AutoTokenizer.from_pretrained(model, use_fast=True, trust_remote_code=True)
     tokenizer.pad_token = tokenizer.eos_token  # OLMo doesn't use pad_token by default
-    model = AutoModelForCausalLM.from_pretrained("allenai/OLMo-7B", torch_dtype=torch.float16 if use_fp16 else torch.float32)
+    model = AutoModelForCausalLM.from_pretrained(model, torch_dtype=torch.float16 if use_fp16 else torch.float32, trust_remote_code=True)
 
     # Load Dolma dataset
-    dataset = load_dataset(dataset, split={"train": "train[:1%]", "validation": "train[99%:]"})
-    tokenized_dataset = dataset.map(lambda x: preprocess_function(x, tokenizer, max_length), batched=True, remove_columns=dataset["train"].column_names)
+    datadir = "/pfs/lustrep1/scratch/project_465001960/mhf/datasets/" 
+    dataset = load_dataset('json', data_files=f"{datadir}/{'v1_5r2_sample-*.json.gz'}", trust_remote_code=True, streaming=True).train_test_split(test_size=0.1)
+    tokenized_train_dataset = dataset['train'].map(lambda x: preprocess_function(x, tokenizer, max_length), batched=True, remove_columns=dataset["train"].column_names)
+    tokenized_val_dataset = dataset['test'].map(lambda x: preprocess_function(x, tokenizer, max_length), batched=True, remove_columns=dataset["train"].column_names)
 
     # Add labels (causal LM: labels == input_ids)
-    tokenized_dataset = tokenized_dataset.map(lambda x: {"labels": x["input_ids"]}, batched=True) 
-    train_dataset=tokenized_dataset["train"]
-    val_dataset=tokenized_dataset["validation"]
+    tokenized_train_dataset = tokenized_train_dataset.map(lambda x: {"labels": x["input_ids"]}, batched=True) 
+    tokenized_val_dataset = tokenized_val_dataset.map(lambda x: {"labels": x["input_ids"]}, batched=True) 
+    train_dataset=tokenized_train_dataset
+    val_dataset=tokenized_val_dataset
 
     train_sampler = DistributedSampler(train_dataset, shuffle=True)
     train_loader = DataLoader(train_dataset, batch_size=batch_size, sampler=train_sampler)
@@ -162,7 +165,7 @@ def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compr
     # prepare distributed training
     if device == 'cuda':
         torch.cuda.set_device(int(os.environ['LOCAL_RANK']))
-    auto_wrap_policy = functools.partial(transformer_auto_wrap_policy, transformer_layer_cls={OLMoDecoderLayer})
+    auto_wrap_policy = functools.partial(transformer_auto_wrap_policy, transformer_layer_cls={TransformerBlock})
     mixed_precision = MixedPrecision(param_dtype=torch.bfloat16, reduce_dtype=torch.bfloat16, buffer_dtype=torch.bfloat16) if torch.cuda.is_bf16_supported() else None
     if single:
         model = model.to(device)
