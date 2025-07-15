@@ -28,7 +28,7 @@ import torch.distributed as dist
 @click.option('--dataset', default='cifar100', type=click.Choice(['cifar10', 'cifar100']))
 @click.option('--batch-size', default=32, help='input batch size for training and validation (default: 32)')
 @click.option('--epochs', default=10, help='number of epochs to train (default: 10)')
-@click.option('--repl', '--replicator', default='deto-demo', type=click.Choice(['deto-demo', 'deto-full', 'deto-none', 'adamw', 'deto-random']))
+@click.option('--replicator', '--repl', default='deto-demo', type=click.Choice(['deto-demo', 'deto-full', 'deto-none', 'adamw', 'deto-random', 'deto-slice', 'deto-stride']))
 @click.option("--optimizer", "--optim",type=click.Choice([opt.value for opt in Optimizers], case_sensitive=False), default="sgd")
 @click.option('--compression-rate', default=0.1)
 @click.option('--compression-topk', default=2)
@@ -41,8 +41,10 @@ import torch.distributed as dist
 @click.option('--description', default='', type=click.STRING, help='String comment for aim.')
 @click.option('--cluster', default='', type=click.STRING, help='Specify compute resource for aim logging')
 @click.option('--lr', default=1e-3)
-@click.option('--accum', default=2, type=int, help='Number of gradient accumulation steps (default: 1)')
-def main(dataset, batch_size, epochs, repl, optimizer, compression_rate, compression_topk, compression_chunk, replicate_every, skip_every, device, shards, rand_seed, accum, description, cluster, lr):
+@click.option('--accum', default=1, type=int, help='Number of gradient accumulation steps (default: 1)')
+def main(dataset, batch_size, epochs, replicator, optimizer, compression_rate, compression_topk, compression_chunk, replicate_every, skip_every, device, shards, rand_seed, description, cluster, lr, accum):
+    if optimizer == 'deto-slice':
+        raise Exception("The slicing replicator does not currently work.")
     rank, nnodes, gpu_per_node = int(os.environ['RANK']), int(os.environ['NNODES']), torch.cuda.device_count()
     git_hash = subprocess.getoutput('git rev-parse HEAD').strip()
     run_args = click.get_current_context().params
@@ -56,8 +58,11 @@ def main(dataset, batch_size, epochs, repl, optimizer, compression_rate, compres
     if rank == 0:
         print('Aim hash: ', aimrun.get_runs()[0].hash)
     single = device in ('cpu', 'mps') or (device == 'cuda' and nnodes == gpu_per_node == 1)
-    model_and_co = setup(dataset, batch_size, repl, optimizer, compression_rate, compression_topk, compression_chunk, replicate_every, skip_every, device, single, shards, rand_seed, lr)
-    train(epochs, repl, single, accum, *model_and_co)
+    if rank == 0:
+        print(aimrun.get_runs()[0].hash)
+    single = device in ('cpu', 'mps') or (device == 'cuda' and nnodes == gpu_per_node == 1)
+    model_and_co = setup(dataset, batch_size, replicator, optimizer, compression_rate, compression_topk, compression_chunk, replicate_every, skip_every, device, single, shards, rand_seed, lr)
+    train(epochs, replicator, single, accum, *model_and_co)
 
 def seed(seed: int):
     random.seed(seed)
@@ -137,19 +142,20 @@ def setup(dataset, batch_size, repl, optimizer, compression_rate, compression_to
     if rand_seed is not None:
         seed(rand_seed)
 
-    config = ViTConfig(
-        image_size=224,
-        patch_size=16,
-        num_channels=3,
-        hidden_size=384,  # ViT-Small uses 384 dim
-        num_hidden_layers=12,
-        num_attention_heads=6,
-        intermediate_size=384 * 4, # MLP size is typically 4x hidden size
-        hidden_dropout_prob=0.1,
-        attention_probs_dropout_prob=0.1,
-        num_labels= 100 if dataset == 'cifar100' else 10
-    )
-    model = ViTForImageClassification(config)
+    #config = ViTConfig(
+    #    image_size=224,
+    #    patch_size=16,
+    #    num_channels=3,
+    #    hidden_size=384,  # ViT-Small uses 384 dim
+    #    num_hidden_layers=12,
+    #    num_attention_heads=6,
+    #    intermediate_size=384 * 4, # MLP size is typically 4x hidden size
+    #    hidden_dropout_prob=0.1,
+    #    attention_probs_dropout_prob=0.1,
+    #    num_labels= 100 if dataset == 'cifar100' else 10
+    #)
+    #model = ViTForImageClassification(config)
+    model = ViTForImageClassification.from_pretrained('google/vit-base-patch16-224')
     model = model.to(device)
 
     # Define Transforms
