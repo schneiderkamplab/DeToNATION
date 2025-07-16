@@ -22,6 +22,7 @@ class DeToAdamW(AdamW, DeToNATIONMixin):
         replicator: Replicator | List[Replicator] = DeMoReplicator(),
         replicate_every: int | List[int] = 1,
         skip_every: int | List[int] | None = None,
+        hooks: bool = True,
         *args,
         **kwargs,
     ):
@@ -70,6 +71,7 @@ class DeToAdamW(AdamW, DeToNATIONMixin):
             replicator=replicator,
             replicate_every=replicate_every,
             skip_every=skip_every,
+            hooks=hooks,
         )
 
     @torch.no_grad()

@@ -42,7 +42,8 @@ import torch.distributed as dist
 @click.option('--cluster', default='', type=click.STRING, help='Specify compute resource for aim logging')
 @click.option('--lr', default=1e-3)
 @click.option('--accum', default=2, type=int, help='Number of gradient accumulation steps (default: 1)')
-def main(dataset, batch_size, epochs, repl, optimizer, compression_rate, compression_topk, compression_chunk, replicate_every, skip_every, device, shards, rand_seed, accum, description, cluster, lr):
+@click.option('--hooks', default=True, type=bool, help="use hooks")
+def main(dataset, batch_size, epochs, repl, optimizer, compression_rate, compression_topk, compression_chunk, replicate_every, skip_every, device, shards, rand_seed, accum, description, cluster, lr, hooks):
     rank, nnodes, gpu_per_node = int(os.environ['RANK']), int(os.environ['NNODES']), torch.cuda.device_count()
     git_hash = subprocess.getoutput('git rev-parse HEAD').strip()
     run_args = click.get_current_context().params
@@ -56,7 +57,7 @@ def main(dataset, batch_size, epochs, repl, optimizer, compression_rate, compres
     if rank == 0:
         print('Aim hash: ', aimrun.get_runs()[0].hash)
     single = device in ('cpu', 'mps') or (device == 'cuda' and nnodes == gpu_per_node == 1)
-    model_and_co = setup(dataset, batch_size, repl, optimizer, compression_rate, compression_topk, compression_chunk, replicate_every, skip_every, device, single, shards, rand_seed, lr)
+    model_and_co = setup(dataset, batch_size, repl, optimizer, compression_rate, compression_topk, compression_chunk, replicate_every, skip_every, device, single, shards, rand_seed, lr, hooks)
     train(epochs, repl, single, accum, *model_and_co)
 
 def seed(seed: int):
@@ -133,7 +134,7 @@ def train(epochs, repl, single, accum, model, train_loader, val_loader, optimize
     dist.destroy_process_group()
     aimrun.close()
 
-def setup(dataset, batch_size, repl, optimizer, compression_rate, compression_topk, compression_chunk, replicate_every, skip_every, device, single, shards, rand_seed, lr):
+def setup(dataset, batch_size, repl, optimizer, compression_rate, compression_topk, compression_chunk, replicate_every, skip_every, device, single, shards, rand_seed, lr, hooks):
     if rand_seed is not None:
         seed(rand_seed)
 
@@ -201,6 +202,14 @@ def setup(dataset, batch_size, repl, optimizer, compression_rate, compression_to
         opt_enum = Optimizers(optimizer.lower())
         model, optimizer = prepare_detonation(model, opt_enum, replicator, fsdp_kwargs={"auto_wrap_policy": auto_wrap_policy, "mixed_precision": mixed_precision}, replicate_every=replicate_every, skip_every=skip_every, sharding_group_size=shards, lr=lr)
     optim = optimizer._optimizer if hasattr(optimizer, "_optimizer") else optimizer
+    if hooks and not single:
+        for group in optimizer.param_groups:
+            for param in group["params"]:
+                if param.requires_grad:
+                    print(f"Adding hook: {param}")
+                    param.register_hook(optimizer.hook_grad_reduce_scatter(param, group))
+                else:
+                    print("No adding hook: ", param)
     scheduler = StepLR(optim, step_size=1, gamma=0.85)
     return model, train_loader, val_loader, optimizer, scheduler, train_sampler
 
