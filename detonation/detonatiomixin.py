@@ -34,6 +34,7 @@ class DeToNATIONMixin():
         replicator: Replicator | List[Replicator] = DeMoReplicator(),
         replicate_every: int | List[int] = 1,
         skip_every: int | List[int] | None = None,
+        hooks: bool = False,
     ):
         self.detonation_weight_decay = detonation_weight_decay
         self.detonation_sign = detonation_sign
@@ -42,6 +43,7 @@ class DeToNATIONMixin():
         self.replicators = replicator if isinstance(replicator, list) else [replicator]
         self.replicate_everys = replicate_every if isinstance(replicate_every, list) else [replicate_every]*len(self.replicators)
         self.skip_everys = [None]*len(self.replicators) if skip_every is None else (skip_every if isinstance(skip_every, list) else [skip_every])
+        self.hooks = hooks
 
         self._sharding_world_size = dist.get_world_size(self.sharding_parallel_group)
         if self._sharding_world_size == 0:
@@ -52,6 +54,8 @@ class DeToNATIONMixin():
         self.state["detonation_step"] = 0
         for replicator, replication_parallel_group in zip(self.replicators, self.replication_parallel_groups):
             replicator.init(self, replication_parallel_group=replication_parallel_group)
+
+    
 
     def hook_grad_reduce_scatter(self, param: torch.Tensor, group):
         def hook(grad):
@@ -97,6 +101,16 @@ class DeToNATIONMixin():
             for param in group["params"]:
                 if not param.requires_grad:
                     continue
+
+                if not self.hooks: # intra-node communication not done during backward
+                    # Any step-wise initialization needed by the replicator
+                    for replicator in self.replicators:
+                        replicator.pre_step()
+
+                    # Sharding gradient if needed
+                    unsharded_grad = param.grad.data
+                    param.grad = None
+                    sharded_grad = self._grad_reduce_scatter(unsharded_grad)  
 
                 # Step-Weight decay
                 if self.detonation_weight_decay != 0.0:
