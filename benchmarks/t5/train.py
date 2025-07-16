@@ -141,7 +141,6 @@ def train(epochs, repl, single, accum, model, train_loader, val_loader, optimize
 def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, dataset, debug, detonation_sign, lr):
     if rand_seed is not None:
         seed(rand_seed)
-
     # prepare model
     tokenizer =  T5Tokenizer.from_pretrained(model, legacy=False)
     model = T5ForConditionalGeneration(T5Config.from_pretrained(model))
@@ -179,11 +178,19 @@ def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compr
         else:
             replicator = NoReplicator()
         opt_enum = Optimizers(optimizer.lower())
-        model, optimizer = prepare_detonation(model, opt_enum, replicator, fsdp_kwargs={"auto_wrap_policy": auto_wrap_policy, "mixed_precision": mixed_precision}, replicate_every=replicate_every, skip_every=skip_every, sharding_group_size=shards, detonation_sign=detonation_sign)
+        model, optimizer = prepare_detonation(model, opt_enum, replicator, fsdp_kwargs={"auto_wrap_policy": auto_wrap_policy, "mixed_precision": mixed_precision}, replicate_every=replicate_every, skip_every=skip_every, sharding_group_size=shards, detonation_sign=detonation_sign, lr=lr)
     else:
         model = FSDP(model, auto_wrap_policy=auto_wrap_policy, mixed_precision=mixed_precision, device_id=int(os.environ['LOCAL_RANK']), sharding_strategy=ShardingStrategy.HYBRID_SHARD)
         optimizer = AdamW(model.parameters(), lr=lr, weight_decay=0.)
     optim = optimizer._optimizer if hasattr(optimizer, "_optimizer") else optimizer
+    if not single:
+        for group in optimizer.param_groups:
+            for param in group["params"]:
+                if param.requires_grad:
+                    print(f"Adding hook: {param}")
+                    param.register_hook(optimizer.hook_grad_reduce_scatter(param, group))
+                else:
+                    print("No adding hook: ", param)
     scheduler = StepLR(optim, step_size=1, gamma=0.85)
     return model, train_loader, val_loader, optimizer, scheduler, train_sampler
 
