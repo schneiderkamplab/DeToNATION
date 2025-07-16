@@ -122,7 +122,6 @@ class DeToNATIONMixin():
                             param_state_dict=self.state[param],
                             param_group=group,
                         )
-                        # print("MAYBE_NEW_GRAD: ", maybe_new_grad)
                         if maybe_new_grad == None:
                             new_grad = sharded_grad.to(param.device).to(param.dtype)
                         else:

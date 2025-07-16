@@ -43,7 +43,8 @@ from transformers.models.t5.modeling_t5 import T5Block
 @click.option('--cluster', default='', type=click.STRING, help='Specify compute resource for aim logging')
 @click.option('--lr', default=1e-3)
 @click.option('--accum', default=1, type=int, help='Number of gradient accumulation steps (default: 1)')
-def main(batch_size, epochs, replicator, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards, rand_seed, dataset, debug, sign, description, cluster, lr, accum):
+@click.option('--hooks', default=True, type=bool, help="use hooks")
+def main(batch_size, epochs, replicator, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards, rand_seed, dataset, debug, sign, description, cluster, lr, accum, hooks):
     if optimizer == 'deto-slice':
         raise Exception("The slicing replicator does not currently work.")
     rank, nnodes, gpu_per_node = int(os.environ['RANK']), int(os.environ['NNODES']), torch.cuda.device_count()
@@ -59,7 +60,7 @@ def main(batch_size, epochs, replicator, optimizer, compression_rate, compressio
     if rank == 0:
         print('Aim hash: ', aimrun.get_runs()[0].hash)
     single = device in ('cpu', 'mps') or (device == 'cuda' and nnodes == gpu_per_node == 1)
-    model_and_co = setup(batch_size, replicator, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, dataset, debug, sign, lr)
+    model_and_co = setup(batch_size, replicator, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, dataset, debug, sign, lr, hooks)
     train(epochs, replicator, single, accum, *model_and_co)
 
 def seed(seed: int):
@@ -138,7 +139,7 @@ def train(epochs, repl, single, accum, model, train_loader, val_loader, optimize
     dist.destroy_process_group()
     aimrun.close()
 
-def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, dataset, debug, detonation_sign, lr):
+def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, dataset, debug, detonation_sign, lr, hooks):
     if rand_seed is not None:
         seed(rand_seed)
     # prepare model
@@ -183,7 +184,7 @@ def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compr
         model = FSDP(model, auto_wrap_policy=auto_wrap_policy, mixed_precision=mixed_precision, device_id=int(os.environ['LOCAL_RANK']), sharding_strategy=ShardingStrategy.HYBRID_SHARD)
         optimizer = AdamW(model.parameters(), lr=lr, weight_decay=0.)
     optim = optimizer._optimizer if hasattr(optimizer, "_optimizer") else optimizer
-    if not single:
+    if hooks and not single:
         for group in optimizer.param_groups:
             for param in group["params"]:
                 if param.requires_grad:
