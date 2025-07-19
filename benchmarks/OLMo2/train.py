@@ -1,6 +1,6 @@
 import aimrun
 import click
-from datasets import load_dataset
+from datasets import load_dataset, Dataset
 from detonation import DeMoReplicator, FullReplicator, NoReplicator, RandomReplicator, SlicingReplicator, StridingReplicator, prepare_detonation, Optimizers
 import functools
 import json
@@ -15,7 +15,7 @@ from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, MixedPrecis
 from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import StepLR
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, IterableDataset
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 from olmo_core.nn.transformer.block import TransformerBlock
@@ -142,25 +142,39 @@ def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compr
         seed(rand_seed)
 
     # Load tokenizer and model
-    tokenizer = AutoTokenizer.from_pretrained(model, use_fast=True, trust_remote_code=True)
+    #tokenizer = AutoTokenizer.from_pretrained(model, use_fast=True, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained("/leonardo_work/EUHPC_A04_086/OLMo-7B-local", local_files_only=True, trust_remote_code=True)
     tokenizer.pad_token = tokenizer.eos_token  # OLMo doesn't use pad_token by default
-    model = AutoModelForCausalLM.from_pretrained(model, torch_dtype=torch.float16 if use_fp16 else torch.float32, trust_remote_code=True)
+    #model = AutoModelForCausalLM.from_pretrained(model, torch_dtype=torch.float16 if use_fp16 else torch.float32, trust_remote_code=True)
+    model = AutoModelForCausalLM.from_pretrained("/leonardo_work/EUHPC_A04_086/OLMo-7B-local", local_files_only=True, trust_remote_code=True)
+
 
     # Load Dolma dataset
-    datadir = "/pfs/lustrep1/scratch/project_465001960/mhf/datasets/" 
-    dataset = load_dataset('json', data_files=f"{datadir}/{'v1_5r2_sample-*.json.gz'}", trust_remote_code=True, streaming=True).train_test_split(test_size=0.1)
-    tokenized_train_dataset = dataset['train'].map(lambda x: preprocess_function(x, tokenizer, max_length), batched=True, remove_columns=dataset["train"].column_names)
-    tokenized_val_dataset = dataset['test'].map(lambda x: preprocess_function(x, tokenizer, max_length), batched=True, remove_columns=dataset["train"].column_names)
+    datadir = "/leonardo_work/EUHPC_A04_086/datasets/allenai/dolma" 
+    stream_dataset = load_dataset('json', data_files=f"{datadir}/{'v1_5r2_sample-*.json.gz'}", streaming=True)['train']
 
-    # Add labels (causal LM: labels == input_ids)
-    tokenized_train_dataset = tokenized_train_dataset.map(lambda x: {"labels": x["input_ids"]}, batched=True) 
-    tokenized_val_dataset = tokenized_val_dataset.map(lambda x: {"labels": x["input_ids"]}, batched=True) 
-    train_dataset=tokenized_train_dataset
-    val_dataset=tokenized_val_dataset
+    class TokenizedStreamingDataset(IterableDataset):
+        def __init__(self, dataset, tokenizer, max_length):
+            self.dataset = dataset
+            self.tokenizer = tokenizer
+            self.max_length = max_length
 
-    train_sampler = DistributedSampler(train_dataset, shuffle=True)
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, sampler=train_sampler)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, sampler=DistributedSampler(val_dataset))
+        def __iter__(self):
+            for example in self.dataset:
+                tokenized = tokenizer(
+                    example["text"],
+                    truncation=True,
+                    max_length=self.max_length,
+                    padding="max_length",
+                )
+                tokenized["labels"] = tokenized["input_ids"]
+                yield tokenized
+
+    tokenized_train_dataset = TokenizedStreamingDataset(stream_dataset, tokenizer, max_length)
+    tokenized_val_dataset = TokenizedStreamingDataset(stream_dataset.take(2000), tokenizer, max_length)  # quick eval sample
+    
+    train_loader = DataLoader(tokenized_train_dataset, batch_size=batch_size)
+    val_loader = DataLoader(tokenized_val_dataset, batch_size=batch_size)
 
     # prepare distributed training
     if device == 'cuda':
@@ -203,3 +217,4 @@ def preprocess_function(example, tokenizer, max_length):
 
 if __name__ == '__main__':
     main()
+
