@@ -19,11 +19,12 @@ from torch.utils.data import DataLoader, IterableDataset
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 from olmo_core.nn.transformer.block import TransformerBlock
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
 
 @click.command()
 @click.option('--batch-size', default=2, help='input batch size for training and validation (default: 32)')
-@click.option('--epochs', default=10, help='number of epochs to train (default: 10)')
+@click.option('--steps', default=10, help='steps to train for (default: 10)')
+@click.option('--val_interval', default=1000, type=int, help='Interval for validation (default: 1000 steps)')
 @click.option('--replicator', '--repl', default='deto-demo', type=click.Choice(['deto-demo', 'deto-full', 'deto-none', 'adamw', 'deto-random', 'deto-slice', 'deto-stride']))
 @click.option("--optimizer", "--optim",type=click.Choice([opt.value for opt in Optimizers], case_sensitive=False), default="sgd")
 @click.option('--compression-rate', default=0.0625)
@@ -42,7 +43,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 @click.option('--cluster', default='', type=click.STRING, help='Specify compute resource for aim logging')
 @click.option('--lr', default=1e-3)
 @click.option('--accum', default=1, type=int, help='Number of gradient accumulation steps (default: 1)')
-def main(batch_size, epochs, replicator, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards, rand_seed, dataset, debug, sign, description, cluster, lr, accum):
+def main(batch_size, steps, val_interval, replicator, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards, rand_seed, dataset, debug, sign, description, cluster, lr, accum):
     max_length = 1024
     use_fp16 = True
     if optimizer == 'deto-slice':
@@ -61,7 +62,7 @@ def main(batch_size, epochs, replicator, optimizer, compression_rate, compressio
         print('Aim hash: ', aimrun.get_runs()[0].hash)
     single = device in ('cpu', 'mps') or (device == 'cuda' and nnodes == gpu_per_node == 1)
     model_and_co = setup(batch_size, replicator, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, dataset, debug, sign, lr, max_length, use_fp16)
-    train(epochs, replicator, single, accum, *model_and_co)
+    train(steps, replicator, single, accum, val_interval, *model_and_co)
 
 def seed(seed: int):
     random.seed(seed)
@@ -72,68 +73,61 @@ def seed(seed: int):
     elif torch.mps.is_available():
         torch.mps.manual_seed()
 
-def train(epochs, repl, single, accum, model, train_loader, val_loader, optimizer, scheduler, train_sampler):
+def train(steps, repl, single, accum, val_interval, model, train_loader, val_loader, optimizer, scheduler):
     rank = int(os.environ['RANK'])
-    for epoch in range(1, epochs+1):
-        # train
-        model.train()
-        train_sampler.set_epoch(epoch)
-        loss_samples = torch.zeros(2).to(model.device)
-        metrics = {}
-        for i, batch in enumerate(tqdm(train_loader, desc=f"Training epoch {epoch}", disable=rank>0, colour="blue", ncols=150)):
-            if single:
-                batch["input_ids"] = batch["input_ids"].to(model.device)
-                batch["labels"] = batch["labels"].to(model.device)
-            if repl == single: # 'adamw'
+    model.train()
+    loss_samples = torch.zeros(2).to(model.device)
+    metrics = {}
+    step = 0
+    train_iter = iter(train_loader)
+    pbar = tqdm(total=steps, desc="Training steps", disable=rank>0, colour="blue", ncols=150)
+    while step < steps:
+        try:
+            batch = next(train_iter)
+        except StopIteration:
+            train_iter = iter(train_loader)
+            batch = next(train_iter)
+        if single:
+            batch["input_ids"] = batch["input_ids"].to(model.device)
+            batch["labels"] = batch["labels"].to(model.device)
+        if repl == single:  # 'adamw'
+            loss = model(input_ids=batch["input_ids"], labels=batch["labels"])["loss"]
+            loss.backward()
+        else:
+            with model.no_sync():
                 loss = model(input_ids=batch["input_ids"], labels=batch["labels"])["loss"]
                 loss.backward()
-            else:
-                with model.no_sync(): # Disable gradient replication for the backward pass
-                    loss = model(input_ids=batch["input_ids"], labels=batch["labels"])["loss"]
-                    loss.backward()
-            if (i+1) % accum == 0:             
-                optimizer.step()                          
-                optimizer.zero_grad()
-            loss_samples[0] += loss.item()
-            loss_samples[1] += len(batch)
-            metrics.update({'train/loss': loss.item()})
-            aimrun.track(metrics)
-        if not repl == 'adamw':
-            for i, replicator in enumerate(optimizer.replicators):
-                if hasattr(replicator, "data_transmitted"):
-                    metrics[f"data_transmitted_gb_{i}"] = sum(replicator.data_transmitted)/2**30
-                    metrics[f"data_received_gb_{i}"] = sum(replicator.data_received)/2**30
-        metrics.clear()
-        # print training statistics
-        if not single:
-            dist.all_reduce(loss_samples, op=dist.ReduceOp.SUM)
-        if rank == 0:
-            train_loss = loss_samples[0] / loss_samples[1]
-            print(f"Epoch {epoch} training loss  : {train_loss:.4f}")
-            aimrun.track({'epoch/train/loss': train_loss}, step=epoch)
-        # validate
-        model.eval()
-        loss_samples.zero_()
-        metrics.clear()
-        with torch.no_grad():
-            for batch in tqdm(val_loader, desc=f"Validating after epoch {epoch}", disable=rank>0, colour="green", ncols=150):
-                if single:
-                    batch["input_ids"] = batch["input_ids"].to(model.device)
-                    batch["labels"] = batch["labels"].to(model.device)
-                loss = model(input_ids=batch["input_ids"], labels=batch["labels"])["loss"]
-                loss_samples[0] += loss.item()
-                loss_samples[1] += len(batch)
-                metrics.update({'val/loss': loss.item()})
-                aimrun.track(metrics)
-                metrics.clear()
-        # print validation statistics
-        if not single:
-            dist.all_reduce(loss_samples, op=dist.ReduceOp.SUM)
-        if rank == 0:
-            val_loss = loss_samples[0] / loss_samples[1]
-            print(f"Epoch {epoch} validation Loss: {val_loss:.4f}")
-            aimrun.track({'epoch/val/loss': val_loss}, step=epoch)
-        scheduler.step()
+        if (step + 1) % accum == 0:
+            optimizer.step()
+            optimizer.zero_grad()
+        loss_samples[0] += loss.item()
+        loss_samples[1] += len(batch)
+        metrics.update({'train/loss': loss.item()})
+        aimrun.track(metrics)
+        step += 1
+        pbar.update(1)
+
+        # Validation at intervals
+        if step % val_interval == 0 or step == steps:
+            model.eval()
+            val_loss_samples = torch.zeros(2).to(model.device)
+            with torch.no_grad():
+                for val_batch in tqdm(val_loader, desc=f"Validating at step {step}", disable=rank>0, colour="green", ncols=150):
+                    if single:
+                        val_batch["input_ids"] = val_batch["input_ids"].to(model.device)
+                        val_batch["labels"] = val_batch["labels"].to(model.device)
+                    val_loss = model(input_ids=val_batch["input_ids"], labels=val_batch["labels"])["loss"]
+                    val_loss_samples[0] += val_loss.item()
+                    val_loss_samples[1] += len(val_batch)
+            if not single:
+                dist.all_reduce(val_loss_samples, op=dist.ReduceOp.SUM)
+            if rank == 0:
+                val_loss = val_loss_samples[0] / val_loss_samples[1]
+                print(f"Step {step} validation Loss: {val_loss:.4f}")
+                aimrun.track({'step/val/loss': val_loss}, step=step)
+            model.train()
+            scheduler.step()
+    pbar.close()
     dist.destroy_process_group()
     aimrun.close()
 
@@ -143,38 +137,43 @@ def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compr
 
     # Load tokenizer and model
     #tokenizer = AutoTokenizer.from_pretrained(model, use_fast=True, trust_remote_code=True)
-    tokenizer = AutoTokenizer.from_pretrained("/leonardo_work/EUHPC_A04_086/OLMo-7B-local", local_files_only=True, trust_remote_code=True)
-    tokenizer.pad_token = tokenizer.eos_token  # OLMo doesn't use pad_token by default
-    #model = AutoModelForCausalLM.from_pretrained(model, torch_dtype=torch.float16 if use_fp16 else torch.float32, trust_remote_code=True)
-    model = AutoModelForCausalLM.from_pretrained("/leonardo_work/EUHPC_A04_086/OLMo-7B-local", local_files_only=True, trust_remote_code=True)
-
-
-    # Load Dolma dataset
-    datadir = "/leonardo_work/EUHPC_A04_086/datasets/allenai/dolma" 
-    stream_dataset = load_dataset('json', data_files=f"{datadir}/{'v1_5r2_sample-*.json.gz'}", streaming=True)['train']
-
-    class TokenizedStreamingDataset(IterableDataset):
-        def __init__(self, dataset, tokenizer, max_length):
-            self.dataset = dataset
-            self.tokenizer = tokenizer
-            self.max_length = max_length
-
-        def __iter__(self):
-            for example in self.dataset:
-                tokenized = tokenizer(
-                    example["text"],
-                    truncation=True,
-                    max_length=self.max_length,
-                    padding="max_length",
-                )
-                tokenized["labels"] = tokenized["input_ids"]
-                yield tokenized
-
-    tokenized_train_dataset = TokenizedStreamingDataset(stream_dataset, tokenizer, max_length)
-    tokenized_val_dataset = TokenizedStreamingDataset(stream_dataset.take(2000), tokenizer, max_length)  # quick eval sample
+    if debug:
+        print("[DEBUG] Using debug tokenizer")
+        tokenizer = AutoTokenizer.from_pretrained("allenai/OLMo-2-0425-1B", trust_remote_code=True)
+    else:
+        tokenizer = AutoTokenizer.from_pretrained("/leonardo_work/EUHPC_A04_086/OLMo-7B-local", local_files_only=True, trust_remote_code=True)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token  # OLMo doesn't use pad_token by default
     
-    train_loader = DataLoader(tokenized_train_dataset, batch_size=batch_size)
-    val_loader = DataLoader(tokenized_val_dataset, batch_size=batch_size)
+  
+    model = AutoModelForCausalLM.from_pretrained("allenai/OLMo-2-0425-1B", trust_remote_code=True)
+    # Load Dolma dataset
+    if debug:
+        datadir = "/mnt/odinstorage/users/jnn/codes/DeToNATION/benchmarks/OLMo2/dolma-v1_6-sample"
+    else:
+        datadir = "/leonardo_work/EUHPC_A04_086/datasets/allenai/dolma" 
+    stream_dataset = load_dataset('json', data_files=f"{datadir}/{'v1_5r2_sample-*.json.gz'}", streaming=True, trust_remote_code=True)['train']
+
+    tokenized_train_dataset = TokenizedStreamingDataset(
+        dataset=stream_dataset,
+        tokenizer=tokenizer,
+        max_length=max_length,
+        split_ratio=0.80,  # 80% for training, 20% for validation
+     
+        is_training=True,
+        seed=rand_seed
+    )
+    tokenized_val_dataset = TokenizedStreamingDataset(
+        dataset=stream_dataset,
+        tokenizer=tokenizer,
+        max_length=max_length,
+        split_ratio=0.80,  # 80% for training, 20% for validation
+        is_training=False,
+        seed=rand_seed
+    )
+  
+    train_loader = DataLoader(tokenized_train_dataset, batch_size=batch_size, collate_fn=olmo_data_collator, num_workers=0)
+    val_loader = DataLoader(tokenized_val_dataset, batch_size=batch_size, collate_fn=olmo_data_collator, num_workers=0)
 
     # prepare distributed training
     if device == 'cuda':
@@ -204,17 +203,101 @@ def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compr
         optimizer = AdamW(model.parameters(), lr=lr, weight_decay=0.)
     optim = optimizer._optimizer if hasattr(optimizer, "_optimizer") else optimizer
     scheduler = StepLR(optim, step_size=1, gamma=0.85)
-    return model, train_loader, val_loader, optimizer, scheduler, train_sampler
+    return model, train_loader, val_loader, optimizer, scheduler
 
 
-def preprocess_function(example, tokenizer, max_length):
-    return tokenizer(
-        example["text"],
-        truncation=True,
-        max_length=max_length,
-        padding="max_length"
-    )
+import torch
+from torch.utils.data import IterableDataset, DataLoader
+from datasets import load_dataset
+import hashlib
+
+def olmo_data_collator(features):
+    """
+    Improved data collator for OLMo2 that handles edge cases
+    """
+    if not features:
+        return {}
+    
+    batch = {}
+    for key in features[0].keys():
+        # Stack tensors and ensure they have the right shape
+        stacked = torch.stack([f[key] for f in features])
+        
+        # Ensure attention_mask is properly formatted
+        if key == "attention_mask":
+            # Make sure attention mask has valid values (0s and 1s only)
+            stacked = stacked.long()
+            # Check for invalid attention masks (all zeros)
+            mask_sums = stacked.sum(dim=1)
+            if torch.any(mask_sums == 0):
+                print(f"Warning: Found attention masks with all zeros. Mask sums: {mask_sums}")
+                # Fix by setting at least the first token to be attended to
+                stacked[mask_sums == 0, 0] = 1
+        
+        batch[key] = stacked
+    
+    return batch
+
+class TokenizedStreamingDataset(IterableDataset):
+    def __init__(self, dataset, tokenizer, max_length=2048, split_ratio=0.95, is_training=True, seed=42):
+        """
+        Streaming dataset for OLMo2 training on Dolma v1.6 sample
+        
+        Args:
+            dataset: HuggingFace streaming dataset
+            tokenizer: OLMo2 tokenizer
+            max_length: Maximum sequence length (default 2048 for OLMo2)
+            split_ratio: Ratio for train/val split (default 0.95 = 95% train, 5% val)
+            is_training: Whether this is the training split (True) or validation split (False)
+            seed: Random seed for reproducible splits
+        """
+        self.dataset = dataset
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+        self.split_ratio = split_ratio
+        self.is_training = is_training
+        self.seed = seed
+
+        # Get rank and world size from torch.distributed
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            self.rank = torch.distributed.get_rank()
+            self.world_size = torch.distributed.get_world_size()
+        else:
+            self.rank = 0
+            self.world_size = 1
+
+    def __iter__(self):
+        for i, example in enumerate(self.dataset):
+            # Shard across distributed workers
+            if i % self.world_size != self.rank:
+                continue
+
+            # Deterministic train/val split
+            text = example["text"]
+            hash_digest = hashlib.md5((text + str(self.seed)).encode()).hexdigest()
+            text_hash = int(hash_digest, 16) % 100000
+            is_train_sample = (text_hash / 100000) < self.split_ratio
+
+            if self.is_training and not is_train_sample:
+                continue
+            elif not self.is_training and is_train_sample:
+                continue
+
+            tokenized = self.tokenizer(
+                text,
+                truncation=True,
+                max_length=self.max_length,
+                padding="max_length",
+                return_tensors="pt"
+            )
+            tokenized = {k: v.squeeze(0) for k, v in tokenized.items()}
+            tokenized["labels"] = tokenized["input_ids"].clone()
+
+            yield tokenized
+
 
 if __name__ == '__main__':
     main()
 
+    # CUDA_VISIBLE_DEVICES=3  NNODES=2 NPROC_PER_NODE=1 RANK=1 ENDPOINT=10.10.0.26:29500 ./run.sh --batch-size 2 --debug True
+    # CUDA_VISIBLE_DEVICES=0  NNODES=2 NPROC_PER_NODE=1 RANK=0 ENDPOINT=10.10.0.26:29500 ./run.sh --batch-size 2 --debug True
