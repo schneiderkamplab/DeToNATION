@@ -23,7 +23,6 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, get_linear_schedul
 @click.command()
 @click.option('--batch-size', default=2, help='input batch size for training and validation (default: 32)')
 @click.option('--steps', default=10, help='steps to train for (default: 10)')
-@click.option('--val_interval', default=1000, type=int, help='Interval for validation (default: 1000 steps)')
 @click.option('--replicator', '--repl', default='deto-demo', type=click.Choice(['deto-demo', 'deto-full', 'deto-none', 'adamw', 'deto-random', 'deto-slice', 'deto-stride']))
 @click.option("--optimizer", "--optim",type=click.Choice([opt.value for opt in Optimizers], case_sensitive=False), default="sgd")
 @click.option('--compression-rate', default=0.0625)
@@ -44,7 +43,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, get_linear_schedul
 @click.option('--accum', default=1, type=int, help='Number of gradient accumulation steps (default: 1)')
 @click.option('--save-dir', default='checkpoints', type=click.Path(exists=False, file_okay=False, dir_okay=True), help='Directory to save checkpoints')
 @click.option('--save-every', default=-1, type=int, help='Save checkpoint every N steps (default: -1)')
-def main(batch_size, steps, val_interval, replicator, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards, rand_seed, dataset, debug, sign, description, cluster, lr, accum, save_dir, save_every):
+def main(batch_size, steps, replicator, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards, rand_seed, dataset, debug, sign, description, cluster, lr, accum, save_dir, save_every):
     max_length = 1024
     use_fp16 = True
     if optimizer == 'deto-slice':
@@ -63,7 +62,7 @@ def main(batch_size, steps, val_interval, replicator, optimizer, compression_rat
         print('Aim hash: ', aimrun.get_runs()[0].hash)
     single = device in ('cpu', 'mps') or (device == 'cuda' and nnodes == gpu_per_node == 1)
     model_and_co = setup(batch_size, replicator, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, dataset, debug, sign, lr, max_length, use_fp16, steps)
-    train(steps, replicator, single, accum, val_interval, save_dir, save_every, *model_and_co)
+    train(steps, replicator, single, accum, save_dir, save_every, *model_and_co)
 
 def seed(seed: int):
     random.seed(seed)
@@ -74,7 +73,7 @@ def seed(seed: int):
     elif torch.mps.is_available():
         torch.mps.manual_seed()
 
-def train(steps, repl, single, accum, val_interval, save_dir, save_every, model, train_loader, optimizer, scheduler):
+def train(steps, repl, single, accum, save_dir, save_every, model, train_loader, optimizer, scheduler):
     rank = int(os.environ['RANK'])
     model.train()
     loss_samples = torch.zeros(2).to(model.device)
