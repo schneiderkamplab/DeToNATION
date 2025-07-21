@@ -14,12 +14,11 @@ import torch.distributed as dist
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, MixedPrecision, ShardingStrategy
 from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader, IterableDataset
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 from olmo_core.nn.transformer.block import TransformerBlock
-from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
+from transformers import AutoTokenizer, AutoModelForCausalLM, get_linear_schedule_with_warmup
 
 @click.command()
 @click.option('--batch-size', default=2, help='input batch size for training and validation (default: 32)')
@@ -43,7 +42,9 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
 @click.option('--cluster', default='', type=click.STRING, help='Specify compute resource for aim logging')
 @click.option('--lr', default=1e-3)
 @click.option('--accum', default=1, type=int, help='Number of gradient accumulation steps (default: 1)')
-def main(batch_size, steps, val_interval, replicator, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards, rand_seed, dataset, debug, sign, description, cluster, lr, accum):
+@click.option('--save-dir', default='checkpoints', type=click.Path(exists=False, file_okay=False, dir_okay=True), help='Directory to save checkpoints')
+@click.option('--save-every', default=-1, type=int, help='Save checkpoint every N steps (default: -1)')
+def main(batch_size, steps, val_interval, replicator, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards, rand_seed, dataset, debug, sign, description, cluster, lr, accum, save_dir, save_every):
     max_length = 1024
     use_fp16 = True
     if optimizer == 'deto-slice':
@@ -61,8 +62,8 @@ def main(batch_size, steps, val_interval, replicator, optimizer, compression_rat
     if rank == 0:
         print('Aim hash: ', aimrun.get_runs()[0].hash)
     single = device in ('cpu', 'mps') or (device == 'cuda' and nnodes == gpu_per_node == 1)
-    model_and_co = setup(batch_size, replicator, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, dataset, debug, sign, lr, max_length, use_fp16)
-    train(steps, replicator, single, accum, val_interval, *model_and_co)
+    model_and_co = setup(batch_size, replicator, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, dataset, debug, sign, lr, max_length, use_fp16, steps)
+    train(steps, replicator, single, accum, val_interval, save_dir, save_every, *model_and_co)
 
 def seed(seed: int):
     random.seed(seed)
@@ -73,7 +74,7 @@ def seed(seed: int):
     elif torch.mps.is_available():
         torch.mps.manual_seed()
 
-def train(steps, repl, single, accum, val_interval, model, train_loader, val_loader, optimizer, scheduler):
+def train(steps, repl, single, accum, val_interval, save_dir, save_every, model, train_loader, optimizer, scheduler):
     rank = int(os.environ['RANK'])
     model.train()
     loss_samples = torch.zeros(2).to(model.device)
@@ -99,6 +100,7 @@ def train(steps, repl, single, accum, val_interval, model, train_loader, val_loa
                 loss.backward()
         if (step + 1) % accum == 0:
             optimizer.step()
+            scheduler.step()
             optimizer.zero_grad()
         loss_samples[0] += loss.item()
         loss_samples[1] += len(batch)
@@ -107,31 +109,17 @@ def train(steps, repl, single, accum, val_interval, model, train_loader, val_loa
         step += 1
         pbar.update(1)
 
-        # Validation at intervals
-        if step % val_interval == 0 or step == steps:
-            model.eval()
-            val_loss_samples = torch.zeros(2).to(model.device)
-            with torch.no_grad():
-                for val_batch in tqdm(val_loader, desc=f"Validating at step {step}", disable=rank>0, colour="green", ncols=150):
-                    if single:
-                        val_batch["input_ids"] = val_batch["input_ids"].to(model.device)
-                        val_batch["labels"] = val_batch["labels"].to(model.device)
-                    val_loss = model(input_ids=val_batch["input_ids"], labels=val_batch["labels"])["loss"]
-                    val_loss_samples[0] += val_loss.item()
-                    val_loss_samples[1] += len(val_batch)
-            if not single:
-                dist.all_reduce(val_loss_samples, op=dist.ReduceOp.SUM)
-            if rank == 0:
-                val_loss = val_loss_samples[0] / val_loss_samples[1]
-                print(f"Step {step} validation Loss: {val_loss:.4f}")
-                aimrun.track({'step/val/loss': val_loss}, step=step)
-            model.train()
-            scheduler.step()
+        if save_every > 0 and (step % save_every == 0 or step == steps):
+            if dist.get_rank() == 0:
+                with FSDP.summon_full_params(model):
+                    save_path = os.path.join(save_dir, f"checkpoint_step_{step}.pt")
+                    model.save_pretrained(save_path)
+                    print(f"Checkpoint saved at step {step}")
     pbar.close()
     dist.destroy_process_group()
     aimrun.close()
 
-def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, dataset, debug, detonation_sign, lr, max_length, use_fp16):
+def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, dataset, debug, detonation_sign, lr, max_length, use_fp16, steps):
     if rand_seed is not None:
         seed(rand_seed)
 
@@ -154,26 +142,8 @@ def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compr
         datadir = "/leonardo_work/EUHPC_A04_086/datasets/allenai/dolma" 
     stream_dataset = load_dataset('json', data_files=f"{datadir}/{'v1_5r2_sample-*.json.gz'}", streaming=True, trust_remote_code=True)['train']
 
-    tokenized_train_dataset = TokenizedStreamingDataset(
-        dataset=stream_dataset,
-        tokenizer=tokenizer,
-        max_length=max_length,
-        split_ratio=0.80,  # 80% for training, 20% for validation
-     
-        is_training=True,
-        seed=rand_seed
-    )
-    tokenized_val_dataset = TokenizedStreamingDataset(
-        dataset=stream_dataset,
-        tokenizer=tokenizer,
-        max_length=max_length,
-        split_ratio=0.80,  # 80% for training, 20% for validation
-        is_training=False,
-        seed=rand_seed
-    )
-  
-    train_loader = DataLoader(tokenized_train_dataset, batch_size=batch_size, collate_fn=olmo_data_collator, num_workers=0)
-    val_loader = DataLoader(tokenized_val_dataset, batch_size=batch_size, collate_fn=olmo_data_collator, num_workers=0)
+    tokenized_train_dataset = TokenizedStreamingDataset(dataset=stream_dataset, tokenizer=tokenizer, max_length=max_length)
+    train_loader = DataLoader(tokenized_train_dataset, batch_size=batch_size, collate_fn=olmo_data_collator, num_workers=8)
 
     # prepare distributed training
     if device == 'cuda':
@@ -202,8 +172,9 @@ def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compr
         model = FSDP(model, auto_wrap_policy=auto_wrap_policy, mixed_precision=mixed_precision, device_id=int(os.environ['LOCAL_RANK']), sharding_strategy=ShardingStrategy.HYBRID_SHARD)
         optimizer = AdamW(model.parameters(), lr=lr, weight_decay=0.)
     optim = optimizer._optimizer if hasattr(optimizer, "_optimizer") else optimizer
-    scheduler = StepLR(optim, step_size=1, gamma=0.85)
-    return model, train_loader, val_loader, optimizer, scheduler
+    num_warmup_steps = int(0.03 * steps) 
+    scheduler = get_linear_schedule_with_warmup(optimizer=optim, num_warmup_steps=num_warmup_steps, num_training_steps=steps)
+    return model, train_loader, optimizer, scheduler
 
 
 import torch
@@ -239,24 +210,13 @@ def olmo_data_collator(features):
     return batch
 
 class TokenizedStreamingDataset(IterableDataset):
-    def __init__(self, dataset, tokenizer, max_length=2048, split_ratio=0.95, is_training=True, seed=42):
+    def __init__(self, dataset, tokenizer, max_length=2048):
         """
-        Streaming dataset for OLMo2 training on Dolma v1.6 sample
-        
-        Args:
-            dataset: HuggingFace streaming dataset
-            tokenizer: OLMo2 tokenizer
-            max_length: Maximum sequence length (default 2048 for OLMo2)
-            split_ratio: Ratio for train/val split (default 0.95 = 95% train, 5% val)
-            is_training: Whether this is the training split (True) or validation split (False)
-            seed: Random seed for reproducible splits
+        Itearable dataset that tokenizes text data from a streaming dataset.
         """
         self.dataset = dataset
         self.tokenizer = tokenizer
         self.max_length = max_length
-        self.split_ratio = split_ratio
-        self.is_training = is_training
-        self.seed = seed
 
         # Get rank and world size from torch.distributed
         if torch.distributed.is_available() and torch.distributed.is_initialized():
@@ -268,21 +228,11 @@ class TokenizedStreamingDataset(IterableDataset):
 
     def __iter__(self):
         for i, example in enumerate(self.dataset):
-            # Shard across distributed workers
+            # Shard across distributed workers. DistributedSampler needs to know the length of the dataset,
             if i % self.world_size != self.rank:
                 continue
 
-            # Deterministic train/val split
-            text = example["text"]
-            hash_digest = hashlib.md5((text + str(self.seed)).encode()).hexdigest()
-            text_hash = int(hash_digest, 16) % 100000
-            is_train_sample = (text_hash / 100000) < self.split_ratio
-
-            if self.is_training and not is_train_sample:
-                continue
-            elif not self.is_training and is_train_sample:
-                continue
-
+            text = example["text"]            
             tokenized = self.tokenizer(
                 text,
                 truncation=True,
