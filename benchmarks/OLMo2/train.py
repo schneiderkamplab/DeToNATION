@@ -103,8 +103,10 @@ def train(steps, repl, single, accum, save_dir, save_every, model, train_loader,
             optimizer.zero_grad()
         loss_samples[0] += loss.item()
         loss_samples[1] += len(batch)
-        metrics.update({'train/loss': loss.item()})
-        aimrun.track(metrics)
+        if rank == 0:
+            metrics.update({'train/loss': loss.item()})
+            aimrun.track(metrics)
+            metrics.clear()
         step += 1
         pbar.update(1)
 
