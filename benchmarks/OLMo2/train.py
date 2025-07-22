@@ -175,7 +175,7 @@ def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compr
         model = FSDP(model, auto_wrap_policy=auto_wrap_policy, mixed_precision=mixed_precision, device_id=int(os.environ['LOCAL_RANK']), sharding_strategy=ShardingStrategy.HYBRID_SHARD)
         optimizer = AdamW(model.parameters(), lr=lr, weight_decay=0.)
     optim = optimizer._optimizer if hasattr(optimizer, "_optimizer") else optimizer
-    num_warmup_steps = int(0.03 * steps) 
+    num_warmup_steps = int(0.04 * steps) 
     scheduler = get_cosine_schedule_with_warmup(optimizer=optim, num_warmup_steps=num_warmup_steps, num_training_steps=steps)
     return model, train_loader, optimizer, scheduler
 
