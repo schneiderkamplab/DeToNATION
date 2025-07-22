@@ -18,7 +18,8 @@ from torch.utils.data import DataLoader, IterableDataset
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 from olmo_core.nn.transformer.block import TransformerBlock
-from transformers import AutoTokenizer, AutoModelForCausalLM, get_linear_schedule_with_warmup
+from transformers import AutoTokenizer, AutoModelForCausalLM, get_cosine_schedule_with_warmup
+
 
 @click.command()
 @click.option('--batch-size', default=2, help='input batch size for training and validation (default: 32)')
@@ -104,6 +105,7 @@ def train(steps, repl, single, accum, save_dir, save_every, model, train_loader,
         loss_samples[0] += loss.item()
         loss_samples[1] += len(batch)
         if rank == 0:
+            print(f"Step {step + 1}/{steps}, Loss: {loss.item():.4f}")
             metrics.update({'train/loss': loss.item()})
             aimrun.track(metrics)
             metrics.clear()
@@ -174,7 +176,7 @@ def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compr
         optimizer = AdamW(model.parameters(), lr=lr, weight_decay=0.)
     optim = optimizer._optimizer if hasattr(optimizer, "_optimizer") else optimizer
     num_warmup_steps = int(0.03 * steps) 
-    scheduler = get_linear_schedule_with_warmup(optimizer=optim, num_warmup_steps=num_warmup_steps, num_training_steps=steps)
+    scheduler = get_cosine_schedule_with_warmup(optimizer=optim, num_warmup_steps=num_warmup_steps, num_training_steps=steps)
     return model, train_loader, optimizer, scheduler
 
 
