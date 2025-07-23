@@ -18,7 +18,7 @@ from torch.utils.data import DataLoader, IterableDataset
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 from olmo_core.nn.transformer.block import TransformerBlock
-from transformers import AutoTokenizer, AutoModelForCausalLM, get_cosine_schedule_with_warmup
+from transformers import AutoTokenizer, AutoModelForCausalLM, get_cosine_schedule_with_warmup, AutoConfig
 
 
 @click.command()
@@ -136,8 +136,9 @@ def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compr
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token  # OLMo doesn't use pad_token by default
     
-  
-    model = AutoModelForCausalLM.from_pretrained("allenai/OLMo-2-0425-1B", trust_remote_code=True)
+    config = AutoConfig.from_pretrained("allenai/OLMo-2-0425-1B", trust_remote_code=True)
+    model = AutoModelForCausalLM.from_config(config, trust_remote_code=True)
+    # model = AutoModelForCausalLM.from_pretrained("allenai/OLMo-2-0425-1B", trust_remote_code=True)
     # Load Dolma dataset
     if debug:
         datadir = "/mnt/odinstorage/users/jnn/codes/DeToNATION/benchmarks/OLMo2/dolma-v1_6-sample"
