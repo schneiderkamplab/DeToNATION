@@ -24,7 +24,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, get_cosine_schedul
 @click.command()
 @click.option('--batch-size', default=2, help='input batch size for training and validation (default: 32)')
 @click.option('--steps', default=10, help='steps to train for (default: 10)')
-@click.option('--replicator', '--repl', default='deto-demo', type=click.Choice(['deto-demo', 'deto-full', 'deto-none', 'adamw', 'deto-random', 'deto-slice', 'deto-stride']))
+@click.option('--replicator', '--repl', default='deto-demo', type=click.Choice(['no-deto','deto-demo', 'deto-full', 'deto-none', 'adamw', 'deto-random', 'deto-slice', 'deto-stride']))
 @click.option("--optimizer", "--optim",type=click.Choice([opt.value for opt in Optimizers], case_sensitive=False), default="sgd")
 @click.option('--compression-rate', default=0.0625)
 @click.option('--compression-topk', default=4)
@@ -91,7 +91,7 @@ def train(steps, repl, single, accum, save_dir, save_every, model, train_loader,
         if single:
             batch["input_ids"] = batch["input_ids"].to(model.device)
             batch["labels"] = batch["labels"].to(model.device)
-        if repl == single:  # 'adamw'
+        if repl == single or repl == 'no-deto':  # 'adamw'
             loss = model(input_ids=batch["input_ids"], labels=batch["labels"])["loss"]
             loss.backward()
         else:
@@ -173,6 +173,8 @@ def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compr
         opt_enum = Optimizers(optimizer.lower())
         model, optimizer = prepare_detonation(model, opt_enum, replicator, fsdp_kwargs={"auto_wrap_policy": auto_wrap_policy, "mixed_precision": mixed_precision}, replicate_every=replicate_every, skip_every=skip_every, sharding_group_size=shards, detonation_sign=detonation_sign, lr=lr)
     else:
+        if dist.get_rank() == 0:
+            print("Using standard PyTorch AdamW optimizer and FSDP without DeToNATION.")
         model = FSDP(model, auto_wrap_policy=auto_wrap_policy, mixed_precision=mixed_precision, device_id=int(os.environ['LOCAL_RANK']), sharding_strategy=ShardingStrategy.HYBRID_SHARD)
         optimizer = AdamW(model.parameters(), lr=lr, weight_decay=0.)
     optim = optimizer._optimizer if hasattr(optimizer, "_optimizer") else optimizer
