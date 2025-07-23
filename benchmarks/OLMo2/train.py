@@ -138,6 +138,7 @@ def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compr
     
     config = AutoConfig.from_pretrained("allenai/OLMo-2-0425-1B", trust_remote_code=True)
     model = AutoModelForCausalLM.from_config(config, trust_remote_code=True)
+    model = model.to(torch.bfloat16)
     # model = AutoModelForCausalLM.from_pretrained("allenai/OLMo-2-0425-1B", trust_remote_code=True)
     # Load Dolma dataset
     if debug:
