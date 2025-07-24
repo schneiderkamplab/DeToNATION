@@ -136,10 +136,12 @@ def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compr
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token  # OLMo doesn't use pad_token by default
     
-    config = AutoConfig.from_pretrained("allenai/OLMo-2-0425-1B", trust_remote_code=True)
-    model = AutoModelForCausalLM.from_config(config, trust_remote_code=True)
-    model = model.to(torch.bfloat16)
-    # model = AutoModelForCausalLM.from_pretrained("allenai/OLMo-2-0425-1B", trust_remote_code=True)
+    # config = AutoConfig.from_pretrained("allenai/OLMo-2-0425-1B", trust_remote_code=True)
+    # model = AutoModelForCausalLM.from_config(config, trust_remote_code=True)
+    # model = model.to(torch.bfloat16)
+    model = AutoModelForCausalLM.from_pretrained("allenai/OLMo-2-0425-1B", trust_remote_code=True)
+    # print(model._init_weights)
+    model.apply(model._init_weights) 
     # Load Dolma dataset
     if debug:
         datadir = "/mnt/odinstorage/users/jnn/codes/DeToNATION/benchmarks/OLMo2/dolma-v1_6-sample"
