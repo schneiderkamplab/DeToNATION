@@ -105,7 +105,6 @@ def train(steps, repl, single, accum, save_dir, save_every, model, train_loader,
         loss_samples[0] += loss.item()
         loss_samples[1] += len(batch)
         if rank == 0:
-            print(f"Step {step + 1}/{steps}, Loss: {loss.item():.4f}")
             metrics.update({'train/loss': loss.item()})
             aimrun.track(metrics)
             metrics.clear()
@@ -132,16 +131,14 @@ def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compr
         print("[DEBUG] Using debug tokenizer")
         tokenizer = AutoTokenizer.from_pretrained("allenai/OLMo-2-0425-1B", trust_remote_code=True)
     else:
-        tokenizer = AutoTokenizer.from_pretrained("/leonardo_work/EUHPC_A04_086/OLMo-7B-local", local_files_only=True, trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained("/leonardo_work/EUHPC_A04_086/OLMo-0425-1B-local", local_files_only=True, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token  # OLMo doesn't use pad_token by default
     
-    # config = AutoConfig.from_pretrained("allenai/OLMo-2-0425-1B", trust_remote_code=True)
-    # model = AutoModelForCausalLM.from_config(config, trust_remote_code=True)
-    # model = model.to(torch.bfloat16)
-    model = AutoModelForCausalLM.from_pretrained("allenai/OLMo-2-0425-1B", trust_remote_code=True)
-    # print(model._init_weights)
-    model.apply(model._init_weights) 
+    #config = AutoConfig.from_pretrained("allenai/OLMo-2-0425-1B", trust_remote_code=True)
+    #model = AutoModelForCausalLM.from_config(config, trust_remote_code=True)
+    #model = AutoModelForCausalLM.from_pretrained("allenai/OLMo-2-0425-1B", trust_remote_code=True)
+    model = AutoModelForCausalLM.from_pretrained("/leonardo_work/EUHPC_A04_086/OLMo-0425-1B-reinit-local", local_files_only=True, trust_remote_code=True)
     # Load Dolma dataset
     if debug:
         datadir = "/mnt/odinstorage/users/jnn/codes/DeToNATION/benchmarks/OLMo2/dolma-v1_6-sample"
@@ -176,8 +173,6 @@ def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compr
         opt_enum = Optimizers(optimizer.lower())
         model, optimizer = prepare_detonation(model, opt_enum, replicator, fsdp_kwargs={"auto_wrap_policy": auto_wrap_policy, "mixed_precision": mixed_precision}, replicate_every=replicate_every, skip_every=skip_every, sharding_group_size=shards, detonation_sign=detonation_sign, lr=lr)
     else:
-        if dist.get_rank() == 0:
-            print("Using standard PyTorch AdamW optimizer and FSDP without DeToNATION.")
         model = FSDP(model, auto_wrap_policy=auto_wrap_policy, mixed_precision=mixed_precision, device_id=int(os.environ['LOCAL_RANK']), sharding_strategy=ShardingStrategy.HYBRID_SHARD)
         optimizer = AdamW(model.parameters(), lr=lr, weight_decay=0.)
     optim = optimizer._optimizer if hasattr(optimizer, "_optimizer") else optimizer

@@ -56,7 +56,7 @@ def main(batch_size, epochs, replicator, optimizer, compression_rate, compressio
         'git_hash': git_hash,
     })
     run_args.pop('description')
-    aimrun.init(repo='aim://157.180.90.29:53800', experiment='t5', description=description, args=run_args)
+    aimrun.init(repo='.', experiment='t5', description=description, args=run_args)
     if rank == 0:
         print('Aim hash: ', aimrun.get_runs()[0].hash)
     single = device in ('cpu', 'mps') or (device == 'cuda' and nnodes == gpu_per_node == 1)
@@ -145,15 +145,16 @@ def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compr
         seed(rand_seed)
 
     # prepare model
-    tokenizer =  T5Tokenizer.from_pretrained(model, legacy=False)
-    model = T5ForConditionalGeneration(T5Config.from_pretrained(model))
+    tokenizer =  T5Tokenizer.from_pretrained("/leonardo_work/EUHPC_A04_086/DeToNATION/benchmarks/t5/t5-large-local/", legacy=False)
+    model = T5ForConditionalGeneration(T5Config.from_pretrained("/leonardo_work/EUHPC_A04_086/DeToNATION/benchmarks/t5/t5-large-local/"))
     # prepare dataset
     if dataset == 'WikiHow':
         train_test_split = load_dataset("gursi26/wikihow-cleaned", split="train").train_test_split(test_size=0.2)
         train_dataset = WikiHow(tokenizer, debug, train_test_split['train'], num_debug_samples=15000)
         val_dataset = WikiHow(tokenizer, debug, train_test_split['test'], num_debug_samples=3000)
     else:
-        train_test_split = load_dataset("Helsinki-NLP/opus_books", "en-fr", split="train").train_test_split(test_size=0.2)
+        train_test_split = load_dataset("opusbooks/", "default", split="train").train_test_split(test_size=0.2)
+        #train_test_split = load_dataset("Helsinki-NLP/opus_books", "en-fr", split="train").train_test_split(test_size=0.2)
         train_dataset = OpusBooks(tokenizer, debug, train_test_split['train'], num_debug_samples=15000)
         val_dataset = OpusBooks(tokenizer, debug, train_test_split['test'], num_debug_samples=3000)
     train_sampler = DistributedSampler(train_dataset, shuffle=True)
