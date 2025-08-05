@@ -126,24 +126,22 @@ def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compr
         seed(rand_seed)
 
     # Load tokenizer and model
-    #tokenizer = AutoTokenizer.from_pretrained(model, use_fast=True, trust_remote_code=True)
     if debug:
-        print("[DEBUG] Using debug tokenizer")
+        # Download from Huggingface
         tokenizer = AutoTokenizer.from_pretrained("allenai/OLMo-2-0425-1B", trust_remote_code=True)
     else:
+        # Fetch from local folder
         tokenizer = AutoTokenizer.from_pretrained("/leonardo_work/EUHPC_A04_086/OLMo-0425-1B-local", local_files_only=True, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token  # OLMo doesn't use pad_token by default
     
-    #config = AutoConfig.from_pretrained("allenai/OLMo-2-0425-1B", trust_remote_code=True)
-    #model = AutoModelForCausalLM.from_config(config, trust_remote_code=True)
-    #model = AutoModelForCausalLM.from_pretrained("allenai/OLMo-2-0425-1B", trust_remote_code=True)
+    # If model can be downloaded from Huggingface at runtime:
+    #   model = AutoModelForCausalLM.from_pretrained("allenai/OLMo-2-0425-1B", trust_remote_code=True)
+    # else load from local dir:
     model = AutoModelForCausalLM.from_pretrained("/leonardo_work/EUHPC_A04_086/OLMo-0425-1B-reinit-local", local_files_only=True, trust_remote_code=True)
+
     # Load Dolma dataset
-    if debug:
-        datadir = "/mnt/odinstorage/users/jnn/codes/DeToNATION/benchmarks/OLMo2/dolma-v1_6-sample"
-    else:
-        datadir = "/leonardo_work/EUHPC_A04_086/datasets/allenai/dolma" 
+    datadir = "/leonardo_work/EUHPC_A04_086/datasets/allenai/dolma" 
     stream_dataset = load_dataset('json', data_files=f"{datadir}/{'v1_5r2_sample-*.json.gz'}", streaming=True, trust_remote_code=True)['train']
 
     tokenized_train_dataset = TokenizedStreamingDataset(dataset=stream_dataset, tokenizer=tokenizer, max_length=max_length)
@@ -252,6 +250,3 @@ class TokenizedStreamingDataset(IterableDataset):
 
 if __name__ == '__main__':
     main()
-
-    # CUDA_VISIBLE_DEVICES=3  NNODES=2 NPROC_PER_NODE=1 RANK=1 ENDPOINT=10.10.0.26:29500 ./run.sh --batch-size 2 --debug True
-    # CUDA_VISIBLE_DEVICES=0  NNODES=2 NPROC_PER_NODE=1 RANK=0 ENDPOINT=10.10.0.26:29500 ./run.sh --batch-size 2 --debug True
