@@ -12,8 +12,8 @@ TODO:
 * auto-detect policy if none is given in prepare_detonation according to the model's structure
 * compute transmitted data for full and no replication (and make that a part of the DeToNATION?)
 * profiling of GPU, CPU, network, and wall time usage (optimize DeMoReplicator? stream replications instead of waiting?)
-"""
 
+"""
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
@@ -35,6 +35,7 @@ class DeToNATIONMixin():
         replicate_every: int | List[int] = 1,
         skip_every: int | List[int] | None = None,
         hooks: bool = False,
+        async_comm: bool = False,
     ):
         self.detonation_weight_decay = detonation_weight_decay
         self.detonation_sign = detonation_sign
@@ -44,6 +45,7 @@ class DeToNATIONMixin():
         self.replicate_everys = replicate_every if isinstance(replicate_every, list) else [replicate_every]*len(self.replicators)
         self.skip_everys = [None]*len(self.replicators) if skip_every is None else (skip_every if isinstance(skip_every, list) else [skip_every])
         self.hooks = hooks
+        self.async_comm = async_comm
 
         self._sharding_world_size = dist.get_world_size(self.sharding_parallel_group)
         if self._sharding_world_size == 0:
@@ -55,7 +57,6 @@ class DeToNATIONMixin():
         for replicator, replication_parallel_group in zip(self.replicators, self.replication_parallel_groups):
             replicator.init(self, replication_parallel_group=replication_parallel_group)
 
-    
 
     def hook_grad_reduce_scatter(self, param: torch.Tensor, group):
         def hook(grad):
@@ -96,6 +97,10 @@ class DeToNATIONMixin():
 
     def step(self, closure: Callable | None = None, base_step: torch.optim.Optimizer.step = None):
         self.state["detonation_step"] += 1
+        
+        for replicator in self.replicators:
+            replicator.pre_step()
+
         for group in self.param_groups:
             lr = group["lr"]
             for param in group["params"]:
@@ -104,13 +109,10 @@ class DeToNATIONMixin():
 
                 if not self.hooks: # intra-node communication not done during backward
                     # Any step-wise initialization needed by the replicator
-                    for replicator in self.replicators:
-                        replicator.pre_step()
-
                     # Sharding gradient if needed
                     unsharded_grad = param.grad.data
                     param.grad = None
-                    sharded_grad = self._grad_reduce_scatter(unsharded_grad)  
+                    _, sharded_grad = self._grad_reduce_scatter(unsharded_grad)  
 
                 # Step-Weight decay
                 if self.detonation_weight_decay != 0.0:
@@ -123,7 +125,8 @@ class DeToNATIONMixin():
                     del param.work_handle
                     del param.reduced_grad
                 
-                sharded_grad = param.grad
+                if self.hooks:
+                    sharded_grad = param.reduced_grad # param.grad
                 # Replicating the gradient if needed
                 for replicate_every, skip_every, replicator in zip(self.replicate_everys, self.skip_everys, self.replicators):
                     if (

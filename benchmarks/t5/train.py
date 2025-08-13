@@ -1,7 +1,7 @@
 import aimrun
 import click
 from datasets import load_dataset
-from detonation import DeMoReplicator, FullReplicator, NoReplicator, RandomReplicator, SlicingReplicator, StridingReplicator, prepare_detonation, Optimizers
+from detonation import AsyncDeMoReplicator, DeMoReplicator, FullReplicator, NoReplicator, RandomReplicator, SlicingReplicator, StridingReplicator, prepare_detonation, Optimizers
 import functools
 import json
 from mltiming import timing_iterator, timing
@@ -43,8 +43,9 @@ from transformers.models.t5.modeling_t5 import T5Block
 @click.option('--cluster', default='', type=click.STRING, help='Specify compute resource for aim logging')
 @click.option('--lr', default=1e-3)
 @click.option('--accum', default=1, type=int, help='Number of gradient accumulation steps (default: 1)')
-@click.option('--hooks', default=True, type=bool, help="use hooks")
-def main(batch_size, epochs, replicator, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards, rand_seed, dataset, debug, sign, description, cluster, lr, accum, hooks):
+@click.option('--hooks', default=False, type=bool, help="use hooks")
+@click.option('--async-comm', default=False, type=bool, help="use asynchronous NCCL communication")
+def main(batch_size, epochs, replicator, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards, rand_seed, dataset, debug, sign, description, cluster, lr, accum, hooks, async_comm):
     if optimizer == 'deto-slice':
         raise Exception("The slicing replicator does not currently work.")
     rank, nnodes, gpu_per_node = int(os.environ['RANK']), int(os.environ['NNODES']), torch.cuda.device_count()
@@ -60,7 +61,7 @@ def main(batch_size, epochs, replicator, optimizer, compression_rate, compressio
     if rank == 0:
         print('Aim hash: ', aimrun.get_runs()[0].hash)
     single = device in ('cpu', 'mps') or (device == 'cuda' and nnodes == gpu_per_node == 1)
-    model_and_co = setup(batch_size, replicator, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, dataset, debug, sign, lr, hooks)
+    model_and_co = setup(batch_size, replicator, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, dataset, debug, sign, lr, hooks, async_comm)
     train(epochs, replicator, single, accum, *model_and_co)
 
 def seed(seed: int):
@@ -139,7 +140,7 @@ def train(epochs, repl, single, accum, model, train_loader, val_loader, optimize
     dist.destroy_process_group()
     aimrun.close()
 
-def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, dataset, debug, detonation_sign, lr, hooks):
+def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, dataset, debug, detonation_sign, lr, hooks, async_comm):
     if rand_seed is not None:
         seed(rand_seed)
     # prepare model
@@ -167,7 +168,10 @@ def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compr
         optimizer = AdamW(model.parameters(), lr=lr, weight_decay=0.)
     elif repl.startswith('deto-'):
         if repl == 'deto-demo':
-            replicator = DeMoReplicator(compression_topk=compression_topk, compression_chunk=compression_chunk)
+            if async_comm:
+                replicator = AsyncDeMoReplicator(compression_topk=compression_topk, compression_chunk=compression_chunk)
+            else:
+                replicator = DeMoReplicator(compression_topk=compression_topk, compression_chunk=compression_chunk)
         elif repl == 'deto-random':
             replicator = RandomReplicator(compression_rate=compression_rate, seed=rand_seed if rand_seed is not None else 42)
         elif repl == 'deto-full':
