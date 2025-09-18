@@ -34,6 +34,7 @@ class DeToNATIONMixin():
         replicator: Replicator | List[Replicator] = DeMoReplicator(),
         replicate_every: int | List[int] = 1,
         skip_every: int | List[int] | None = None,
+        hooks: bool = False,
     ):
         self.detonation_weight_decay = detonation_weight_decay
         self.detonation_sign = detonation_sign
@@ -42,6 +43,7 @@ class DeToNATIONMixin():
         self.replicators = replicator if isinstance(replicator, list) else [replicator]
         self.replicate_everys = replicate_every if isinstance(replicate_every, list) else [replicate_every]*len(self.replicators)
         self.skip_everys = [None]*len(self.replicators) if skip_every is None else (skip_every if isinstance(skip_every, list) else [skip_every])
+        self.hooks = hooks
 
         self._sharding_world_size = dist.get_world_size(self.sharding_parallel_group)
         if self._sharding_world_size == 0:
@@ -72,6 +74,20 @@ class DeToNATIONMixin():
             group=self.sharding_parallel_group,
         )
         return sharded_grad
+    
+    def hook_grad_reduce_scatter(self, param: torch.Tensor, group):
+        def hook(grad):
+            # Any step-wise initialization needed by the replicator
+            for replicator in self.replicators:
+                replicator.pre_step()
+
+            # Sharding gradient if needed
+            unsharded_grad = grad.data
+            param.grad = self._grad_reduce_scatter(unsharded_grad)  
+            # Return None to indicate we've handled the gradient ourselves
+            # This prevents PyTorch from setting param.grad to the hook's return value
+            return None
+        return hook
 
     def step(self, closure: Callable | None = None, base_step: torch.optim.Optimizer.step = None):
         self.state["detonation_step"] += 1
@@ -86,10 +102,13 @@ class DeToNATIONMixin():
                 if not param.requires_grad:
                     continue
                 
-                # Sharding gradient if needed
-                unsharded_grad = param.grad.data
-                param.grad = None
-                sharded_grad = self._grad_reduce_scatter(unsharded_grad)
+                if not self.hooks:
+                    # Sharding gradient if needed
+                    unsharded_grad = param.grad.data
+                    param.grad = None
+                    sharded_grad = self._grad_reduce_scatter(unsharded_grad)
+                else:
+                    sharded_grad = param.grad
 
                 # Step-Weight decay
                 if self.detonation_weight_decay != 0.0:

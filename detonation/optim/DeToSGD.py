@@ -20,6 +20,7 @@ class DeToSGD(SGD, DeToNATIONMixin):
         replicator: Replicator | List[Replicator] = DeMoReplicator(),
         replicate_every: int | List[int] = 1,
         skip_every: int | List[int] | None = None,
+        hooks: bool = False,
         *args,
         **kwargs,
     ):
@@ -38,6 +39,7 @@ class DeToSGD(SGD, DeToNATIONMixin):
             replicator=replicator,
             replicate_every=replicate_every,
             skip_every=skip_every,
+            hooks=hooks,
         )
 
     @torch.no_grad()

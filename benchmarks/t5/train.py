@@ -24,7 +24,7 @@ from transformers.models.t5.modeling_t5 import T5Block
 
 @click.command()
 @click.option('--batch-size', default=32, help='input batch size for training and validation (default: 32)')
-@click.option('--epochs', default=10, help='number of epochs to train (default: 10)')
+@click.option('--epochs', default=5, help='number of epochs to train (default: 10)')
 @click.option('--replicator', '--repl', default='deto-demo', type=click.Choice(['deto-demo', 'deto-full', 'deto-none', 'adamw', 'deto-random', 'deto-slice', 'deto-stride']))
 @click.option("--optimizer", "--optim",type=click.Choice([opt.value for opt in Optimizers], case_sensitive=False), default="sgd")
 @click.option('--compression-rate', default=0.0625)
@@ -41,10 +41,11 @@ from transformers.models.t5.modeling_t5 import T5Block
 @click.option('--sign', default=True, type=bool, help="Use sign of gradients or full values.")
 @click.option('--description', default='', type=click.STRING, help='String comment for aim.')
 @click.option('--cluster', default='', type=click.STRING, help='Specify compute resource for aim logging')
-@click.option('--lr', default=1e-3)
+@click.option('--lr', default=1e-5)
 @click.option('--accum', default=1, type=int, help='Number of gradient accumulation steps (default: 1)')
 @click.option('--avg', default=False)
-def main(batch_size, epochs, replicator, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards, rand_seed, dataset, debug, sign, description, cluster, lr, accum, avg):
+@click.option('--hooks', default=True, type=bool, help="Use gradient hooks to overlap communication and computation.")
+def main(batch_size, epochs, replicator, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards, rand_seed, dataset, debug, sign, description, cluster, lr, accum, avg, hooks):
     if optimizer == 'deto-slice':
         raise Exception("The slicing replicator does not currently work.")
     rank, nnodes, gpu_per_node = int(os.environ['RANK']), int(os.environ['NNODES']), torch.cuda.device_count()
@@ -60,7 +61,7 @@ def main(batch_size, epochs, replicator, optimizer, compression_rate, compressio
     if rank == 0:
         print('Aim hash: ', aimrun.get_runs()[0].hash)
     single = device in ('cpu', 'mps') or (device == 'cuda' and nnodes == gpu_per_node == 1)
-    model_and_co = setup(batch_size, replicator, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, dataset, debug, sign, lr)
+    model_and_co = setup(batch_size, replicator, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, dataset, debug, sign, lr, hooks)
     train(epochs, replicator, single, accum, *model_and_co)
 
 def seed(seed: int):
@@ -140,13 +141,13 @@ def train(epochs, repl, single, accum, model, train_loader, val_loader, optimize
     dist.destroy_process_group()
     aimrun.close()
 
-def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, dataset, debug, detonation_sign, lr):
+def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, dataset, debug, detonation_sign, lr, hooks):
     if rand_seed is not None:
         seed(rand_seed)
 
     # prepare model
-    tokenizer =  T5Tokenizer.from_pretrained("/leonardo_work/EUHPC_A04_086/DeToNATION/benchmarks/t5/t5-large-local/", legacy=False)
-    model = T5ForConditionalGeneration(T5Config.from_pretrained("/leonardo_work/EUHPC_A04_086/DeToNATION/benchmarks/t5/t5-large-local/"))
+    tokenizer =  T5Tokenizer.from_pretrained(model, legacy=False)
+    model = T5ForConditionalGeneration(T5Config.from_pretrained(model))
     # prepare dataset
     if dataset == 'WikiHow':
         train_test_split = load_dataset("gursi26/wikihow-cleaned", split="train").train_test_split(test_size=0.2)
@@ -187,6 +188,14 @@ def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compr
         model = FSDP(model, auto_wrap_policy=auto_wrap_policy, mixed_precision=mixed_precision, device_id=int(os.environ['LOCAL_RANK']), sharding_strategy=ShardingStrategy.HYBRID_SHARD)
         optimizer = AdamW(model.parameters(), lr=lr, weight_decay=0.)
     optim = optimizer._optimizer if hasattr(optimizer, "_optimizer") else optimizer
+    if hooks and not single:
+        for group in optimizer.param_groups:
+            for param in group["params"]:
+                if param.requires_grad:
+                    print(f"Adding hook: {param}")
+                    param.register_hook(optimizer.hook_grad_reduce_scatter(param, group))
+                else:
+                    print("No adding hook: ", param)
     scheduler = StepLR(optim, step_size=1, gamma=0.85)
     return model, train_loader, val_loader, optimizer, scheduler, train_sampler
 
