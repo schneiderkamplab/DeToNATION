@@ -43,6 +43,8 @@ class RandomReplicator(Replicator):
         self._replication_world_size = self.replication_parallel_group.size()
         self.data_transmitted = []
         self.data_received = []
+        self
+        self.val_queue = {}
 
     def pre_step(self):
         self.data_transmit = 0
@@ -54,6 +56,15 @@ class RandomReplicator(Replicator):
         self.data_transmitted.append(self.data_transmit)
         self.data_received.append(self.data_receive)
 
+    def post_communication(self, compressed_grad, param, selected_rows):
+        # Average the compressed gradient
+        handle = dist.all_reduce(compressed_grad, dist.ReduceOp.AVG, group=self.replication_parallel_group, async_op=True)
+        self.val_queue[param] = {"buffer": compressed_grad, "handle": handle, "indices": selected_rows}
+
+        # Log I/O data size
+        self.data_transmit += compressed_grad.nbytes
+        self.data_receive += compressed_grad.nbytes
+    
     def replicate(
         self,
         sharded_grad: torch.Tensor,
@@ -86,15 +97,22 @@ class RandomReplicator(Replicator):
         mask[selected_rows] = True
         delta.mul_(~mask.unsqueeze(1) if delta.dim() > 1 else ~mask)
 
-        # Average the compressed gradient
-        dist.all_reduce(compressed_grad, dist.ReduceOp.AVG, group=self.replication_parallel_group)
+        if param in self.val_queue:
+            self.val_queue[param]["handle"].wait() # should be no-op guard
 
-        # Log I/O data size
-        self.data_transmit += compressed_grad.nbytes
-        self.data_receive += compressed_grad.nbytes
-
-        # Decode new gradient from all nodes
-        new_grad = torch.zeros_like(delta, device=param.device)
-        new_grad[selected_rows] = compressed_grad
-        new_grad = new_grad.view_as(sharded_grad)
-        return new_grad
+            # Decode new gradient from all nodes
+            new_grad = torch.zeros_like(delta, device=param.device)
+            idx = self.val_queue[param]["indices"]
+            new_grad[idx] = self.val_queue[param]["buffer"] # now grab from self.val_queue
+            new_grad = new_grad.view_as(sharded_grad)
+            
+            # remove from queue
+            del self.val_queue[param]
+            
+            # post communication from this step
+            self.post_communication(compressed_grad, param, selected_rows)
+            return new_grad
+        else: 
+            # post communication new gradient
+            self.post_communication(compressed_grad, param, selected_rows)
+            return None # no grad available yet
