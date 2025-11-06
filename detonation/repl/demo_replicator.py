@@ -45,6 +45,8 @@ class DeMoReplicator(Replicator):
         self._replication_world_size = self.replication_parallel_group.size()
         self.data_transmitted = []
         self.data_received = []
+        self.idx_queue = {}
+        self.val_queue = {}
 
     def pre_step(self):
         self.data_transmit = 0
@@ -53,6 +55,16 @@ class DeMoReplicator(Replicator):
     def post_step(self):
         self.data_transmitted.append(self.data_transmit)
         self.data_received.append(self.data_receive)
+
+    def post_communication(self, sparse_idx, sparse_val, param):
+        # Prepare and gather the indices and values, async all_gather
+        sparse_idx_gather_buf = [torch.zeros_like(sparse_idx) for _ in range(self._replication_world_size)]
+        sparse_val_gather_buf = [torch.zeros_like(sparse_val) for _ in range(self._replication_world_size)]
+        sparse_idx_handle = dist.all_gather(sparse_idx_gather_buf, sparse_idx, group=self.replication_parallel_group, async_op=True)
+        sparse_val_handle = dist.all_gather(sparse_val_gather_buf, sparse_val, group=self.replication_parallel_group, async_op=True)
+    
+        self.idx_queue[param] = {"buffer": sparse_idx_gather_buf, "handle": sparse_idx_handle}
+        self.val_queue[param] = {"buffer": sparse_val_gather_buf, "handle": sparse_val_handle}
 
     def replicate(
         self,
@@ -78,7 +90,7 @@ class DeMoReplicator(Replicator):
             self.transform.encode(delta), self.compression_topk
         )
         sparse_idx = sparse_idx.to(torch.int32)
-
+        
         # Estimate transmitted delta
         transmit_grad = self.transform.decode(
             DCTCompress.decompress(sparse_idx.to(torch.int64), sparse_val, xshape, param.device, param.dtype)
@@ -86,23 +98,34 @@ class DeMoReplicator(Replicator):
 
         # Remove transmitted from delta
         delta.sub_(transmit_grad)
+        
+        if param in self.idx_queue and param in self.val_queue:
+            if self.idx_queue[param]["handle"].is_completed() and self.val_queue[param]["handle"].is_completed(): # something in queue
+                self.idx_queue[param]["handle"].wait() # should be no-op guard
+                self.val_queue[param]["handle"].wait()
 
-        # Prepare and gather the indices and values
-        sparse_idx_gather = [torch.zeros_like(sparse_idx) for _ in range(self._replication_world_size)]
-        sparse_val_gather = [torch.zeros_like(sparse_val) for _ in range(self._replication_world_size)]
-        sparse_idx_handle = dist.all_gather(sparse_idx_gather, sparse_idx, group=self.replication_parallel_group, async_op=True)
-        sparse_val_handle = dist.all_gather(sparse_val_gather, sparse_val, group=self.replication_parallel_group, async_op=True)
-        sparse_idx_handle.wait()
-        sparse_val_handle.wait()
+                sparse_idx_gather_buf = self.idx_queue[param]["buffer"]
+                sparse_val_gather_buf = self.val_queue[param]["buffer"]
 
-        # Log I/O data size
-        self.data_transmit += sparse_idx.nbytes + sparse_val.nbytes
-        for si, v in zip(sparse_idx_gather, sparse_val_gather):
-            self.data_receive += si.nbytes + v.nbytes
+                # Log I/O data size
+                self.data_transmit += sparse_idx.nbytes + sparse_val.nbytes
+                for si, v in zip(sparse_idx_gather_buf, sparse_val_gather_buf):
+                    self.data_receive += si.nbytes + v.nbytes
 
-        # Decode new gradient from all nodes
-        sparse_idx_gather = [x.to(torch.int64) for x in sparse_idx_gather]
-        new_grad = self.transform.decode(
-            DCTCompress.batch_decompress(sparse_idx_gather, sparse_val_gather, xshape, param.device, param.dtype)
-        )
-        return new_grad
+                # Decode new gradient from all nodes
+                sparse_idx_gather_buf = [x.to(torch.int64) for x in sparse_idx_gather_buf]
+                new_grad = self.transform.decode(
+                    DCTCompress.batch_decompress(sparse_idx_gather_buf, sparse_val_gather_buf, xshape, param.device, param.dtype)
+                )
+
+                # remove from queue
+                del self.idx_queue[param]
+                del self.val_queue[param]
+
+                # post communication from this step
+                self.post_communication(sparse_idx=sparse_idx, sparse_val=sparse_val, param=param)
+                return new_grad   
+            
+        else:
+            self.post_communication(sparse_idx=sparse_idx, sparse_val=sparse_val, param=param)
+            return None # no grad available yet

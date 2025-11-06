@@ -99,6 +99,7 @@ def train(epochs, repl, single, accum, model, train_loader, val_loader, optimize
                 optimizer.zero_grad()
             loss_samples[0] += loss.item()
             loss_samples[1] += len(batch)
+            print("Loss:", loss.item())
             metrics.update({'train/loss': loss.item()})
             aimrun.track(metrics)
         if not repl == 'adamw':

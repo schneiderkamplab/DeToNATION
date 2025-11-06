@@ -55,6 +55,20 @@ class DeToNATIONMixin():
         for replicator, replication_parallel_group in zip(self.replicators, self.replication_parallel_groups):
             replicator.init(self, replication_parallel_group=replication_parallel_group)
 
+    def hook_grad_reduce_scatter(self, param: torch.Tensor, group):
+        def hook(grad):
+            # Any step-wise initialization needed by the replicator
+            for replicator in self.replicators:
+                replicator.pre_step()
+
+            # Sharding gradient if needed
+            unsharded_grad = grad.data
+            param.grad = None
+            sharded_grad = self._grad_reduce_scatter(unsharded_grad)
+        
+            return sharded_grad
+        return hook
+    
     def _grad_reduce_scatter(self, grad: torch.Tensor):
         # Do not reduce_scatter if the gradient is not sharded
         if self._sharding_world_size == 1:
@@ -74,20 +88,6 @@ class DeToNATIONMixin():
             group=self.sharding_parallel_group,
         )
         return sharded_grad
-    
-    def hook_grad_reduce_scatter(self, param: torch.Tensor, group):
-        def hook(grad):
-            # Any step-wise initialization needed by the replicator
-            for replicator in self.replicators:
-                replicator.pre_step()
-
-            # Sharding gradient if needed
-            unsharded_grad = grad.data
-            param.grad = self._grad_reduce_scatter(unsharded_grad)  
-            # Return None to indicate we've handled the gradient ourselves
-            # This prevents PyTorch from setting param.grad to the hook's return value
-            return None
-        return hook
 
     def step(self, closure: Callable | None = None, base_step: torch.optim.Optimizer.step = None):
         self.state["detonation_step"] += 1
@@ -120,14 +120,18 @@ class DeToNATIONMixin():
                         (self.state["detonation_step"] % replicate_every == 0) and
                         (skip_every is None or (self.state["detonation_step"] % skip_every != 0))
                     ):
-                        new_grad = replicator.replicate(
+                        assert sharded_grad.norm() > 0, "Sharded gradient norm is zero before replication"
+                        maybe_new_grad = replicator.replicate(
                             sharded_grad=sharded_grad,
                             param=param,
                             param_state_dict=self.state[param],
                             param_group=group,
                         )
-                    else:
-                        new_grad = sharded_grad.to(param.device).to(param.dtype)
+                        if maybe_new_grad is None:
+                            new_grad = torch.zeros_like(sharded_grad).to(param.dtype).to(param.device)
+                        else:
+                            new_grad = maybe_new_grad
+                
                 param.grad = new_grad
 
                 # Sign-SGD
