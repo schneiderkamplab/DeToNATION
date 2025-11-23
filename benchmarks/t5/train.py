@@ -27,7 +27,7 @@ from detonation.comm.bucket_manager import BucketManager
 @click.command()
 @click.option('--batch-size', default=32, help='input batch size for training and validation (default: 32)')
 @click.option('--epochs', default=5, help='number of epochs to train (default: 10)')
-@click.option('--replicator', '--repl', default='deto-random', type=click.Choice(['deto-demo', 'deto-full', 'deto-none', 'adamw', 'deto-random', 'deto-slice', 'deto-stride']))
+@click.option('--replicator', '--repl', default='deto-demo', type=click.Choice(['deto-demo', 'deto-full', 'deto-none', 'adamw', 'deto-random', 'deto-slice', 'deto-stride']))
 @click.option("--optimizer", "--optim",type=click.Choice([opt.value for opt in Optimizers], case_sensitive=False), default="sgd")
 @click.option('--compression-rate', default=0.0625)
 @click.option('--compression-topk', default=4)
@@ -47,7 +47,8 @@ from detonation.comm.bucket_manager import BucketManager
 @click.option('--accum', default=1, type=int, help='Number of gradient accumulation steps (default: 1)')
 @click.option('--avg', default=False)
 @click.option('--hooks', default=False, type=bool, help="Use gradient hooks to overlap communication and computation.")
-def main(batch_size, epochs, replicator, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards, rand_seed, dataset, debug, sign, description, cluster, lr, accum, avg, hooks):
+@click.option('--profile', default=False, type=bool, help="Enable profiling with torch.profiler.")
+def main(batch_size, epochs, replicator, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards, rand_seed, dataset, debug, sign, description, cluster, lr, accum, avg, hooks, profile):
     if optimizer == 'deto-slice':
         raise Exception("The slicing replicator does not currently work.")
     rank, nnodes, gpu_per_node = int(os.environ['RANK']), int(os.environ['NNODES']), torch.cuda.device_count()
@@ -64,7 +65,7 @@ def main(batch_size, epochs, replicator, optimizer, compression_rate, compressio
         print('Aim hash: ', aimrun.get_runs()[0].hash)
     single = device in ('cpu', 'mps') or (device == 'cuda' and nnodes == gpu_per_node == 1)
     model_and_co = setup(batch_size, replicator, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, dataset, debug, sign, lr, hooks)
-    train(epochs, replicator, single, accum, *model_and_co)
+    train(epochs, replicator, single, accum, profile, *model_and_co)
 
 def seed(seed: int):
     random.seed(seed)
@@ -75,7 +76,26 @@ def seed(seed: int):
     elif torch.mps.is_available():
         torch.mps.manual_seed()
 
-def train(epochs, repl, single, accum, model, train_loader, val_loader, optimizer, scheduler, train_sampler):
+def maybe_profile(enabled: bool):
+    if not enabled:
+        from contextlib import nullcontext
+        return nullcontext()
+    import torch.profiler as profiler
+    from torch.profiler import schedule, tensorboard_trace_handler
+
+    tracing_schedule = schedule(skip_first=5, wait=5, warmup=2, active=2, repeat=1)
+    trace_handler = tensorboard_trace_handler(dir_name="traces/", use_gzip=True)
+    return profiler.profile(
+        activities=[profiler.ProfilerActivity.CPU, profiler.ProfilerActivity.CUDA],
+        record_shapes=True,
+        with_stack=True,        
+        profile_memory=True,
+        with_flops=True,
+        schedule=tracing_schedule,
+        on_trace_ready=trace_handler,
+    )
+
+def train(epochs, repl, single, accum, profile, model, train_loader, val_loader, optimizer, scheduler, train_sampler, manager):
     rank = int(os.environ['RANK'])
     for epoch in range(1, epochs+1):
         # train
@@ -83,66 +103,67 @@ def train(epochs, repl, single, accum, model, train_loader, val_loader, optimize
         train_sampler.set_epoch(epoch)
         loss_samples = torch.zeros(2).to(model.device)
         metrics = {}
-        for i, batch in enumerate(tqdm(train_loader, desc=f"Training epoch {epoch}", disable=rank>0, colour="blue", ncols=150)):
-            if single:
-                batch["source_ids"] = batch["source_ids"].to(model.device)
-                batch["source_mask"] = batch["source_mask"].to(model.device)
-                batch["target_ids"] = batch["target_ids"].to(model.device)
-            if repl == single: # 'adamw'
-                loss = model(input_ids=batch["source_ids"],attention_mask=batch["source_mask"],labels=batch["target_ids"] )["loss"]
-                loss.backward()
-            else:
-                with model.no_sync(): # Disable gradient replication for the backward pass
-                    loss = model(input_ids=batch["source_ids"],attention_mask=batch["source_mask"],labels=batch["target_ids"] )["loss"]
-                    loss = loss / accum
-                    loss.backward()
-                    
-                    # manager.finalize_all()   # will launch leftover comms and wait
-            if (i+1) % accum == 0:             
-                optimizer.step()                          
-                optimizer.zero_grad()
-            loss_samples[0] += loss.item()
-            loss_samples[1] += len(batch)
-            print("Loss:", loss.item())
-            metrics.update({'train/loss': loss.item()})
-            aimrun.track(metrics)
-        if not repl == 'adamw':
-            for i, replicator in enumerate(optimizer.replicators):
-                if hasattr(replicator, "data_transmitted"):
-                    metrics[f"data_transmitted_gb_{i}"] = sum(replicator.data_transmitted)/2**30
-                    metrics[f"data_received_gb_{i}"] = sum(replicator.data_received)/2**30
-        metrics.clear()
-        # print training statistics
-        if not single:
-            dist.all_reduce(loss_samples, op=dist.ReduceOp.SUM)
-        if rank == 0:
-            train_loss = loss_samples[0] / loss_samples[1]
-            print(f"Epoch {epoch} training loss  : {train_loss:.4f}")
-            aimrun.track({'epoch/train/loss': train_loss}, step=epoch)
-        # validate
-        model.eval()
-        loss_samples.zero_()
-        metrics.clear()
-        with torch.no_grad():
-            for batch in tqdm(val_loader, desc=f"Validating after epoch {epoch}", disable=rank>0, colour="green", ncols=150):
+        with maybe_profile(profile) as prof:
+            for i, batch in enumerate(tqdm(train_loader, desc=f"Training epoch {epoch}", disable=rank>0, colour="blue", ncols=150)):
                 if single:
                     batch["source_ids"] = batch["source_ids"].to(model.device)
                     batch["source_mask"] = batch["source_mask"].to(model.device)
                     batch["target_ids"] = batch["target_ids"].to(model.device)
-                loss = model(input_ids=batch["source_ids"],attention_mask=batch["source_mask"],labels=batch["target_ids"])["loss"]
+                if repl == single: # 'adamw'
+                    loss = model(input_ids=batch["source_ids"],attention_mask=batch["source_mask"],labels=batch["target_ids"] )["loss"]
+                    loss.backward()
+                else:
+                    with model.no_sync(): # Disable gradient replication for the backward pass
+                        loss = model(input_ids=batch["source_ids"],attention_mask=batch["source_mask"],labels=batch["target_ids"] )["loss"]
+                        loss = loss / accum
+                        loss.backward()
+                        manager.finalize_all() 
+                if (i+1) % accum == 0:             
+                    optimizer.step()                          
+                    optimizer.zero_grad()
                 loss_samples[0] += loss.item()
                 loss_samples[1] += len(batch)
-                metrics.update({'val/loss': loss.item()})
+                if profile:
+                    prof.step()
+                metrics.update({'train/loss': loss.item()})
                 aimrun.track(metrics)
-                metrics.clear()
-        # print validation statistics
-        if not single:
-            dist.all_reduce(loss_samples, op=dist.ReduceOp.SUM)
-        if rank == 0:
-            val_loss = loss_samples[0] / loss_samples[1]
-            print(f"Epoch {epoch} validation Loss: {val_loss:.4f}")
-            aimrun.track({'epoch/val/loss': val_loss}, step=epoch)
-        scheduler.step()
+            if not repl == 'adamw':
+                for i, replicator in enumerate(optimizer.replicators):
+                    if hasattr(replicator, "data_transmitted"):
+                        metrics[f"data_transmitted_gb_{i}"] = sum(replicator.data_transmitted)/2**30
+                        metrics[f"data_received_gb_{i}"] = sum(replicator.data_received)/2**30
+            metrics.clear()
+            # print training statistics
+            if not single:
+                dist.all_reduce(loss_samples, op=dist.ReduceOp.SUM)
+            if rank == 0:
+                train_loss = loss_samples[0] / loss_samples[1]
+                print(f"Epoch {epoch} training loss  : {train_loss:.4f}")
+                aimrun.track({'epoch/train/loss': train_loss}, step=epoch)
+            # validate
+            model.eval()
+            loss_samples.zero_()
+            metrics.clear()
+            with torch.no_grad():
+                for batch in tqdm(val_loader, desc=f"Validating after epoch {epoch}", disable=rank>0, colour="green", ncols=150):
+                    if single:
+                        batch["source_ids"] = batch["source_ids"].to(model.device)
+                        batch["source_mask"] = batch["source_mask"].to(model.device)
+                        batch["target_ids"] = batch["target_ids"].to(model.device)
+                    loss = model(input_ids=batch["source_ids"],attention_mask=batch["source_mask"],labels=batch["target_ids"])["loss"]
+                    loss_samples[0] += loss.item()
+                    loss_samples[1] += len(batch)
+                    metrics.update({'val/loss': loss.item()})
+                    aimrun.track(metrics)
+                    metrics.clear()
+            # print validation statistics
+            if not single:
+                dist.all_reduce(loss_samples, op=dist.ReduceOp.SUM)
+            if rank == 0:
+                val_loss = loss_samples[0] / loss_samples[1]
+                print(f"Epoch {epoch} validation Loss: {val_loss:.4f}")
+                aimrun.track({'epoch/val/loss': val_loss}, step=epoch)
+            scheduler.step()
     dist.destroy_process_group()
     aimrun.close()
 
@@ -204,7 +225,7 @@ def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compr
         #         else:
         #             print("No adding hook: ", param)
     scheduler = StepLR(optim, step_size=1, gamma=0.85)
-    return model, train_loader, val_loader, optimizer, scheduler, train_sampler
+    return model, train_loader, val_loader, optimizer, scheduler, train_sampler, manager if hooks and not single else None
 
 class OpusBooks(Dataset):
     def __init__(self, tokenizer, debug, dataset, num_debug_samples):

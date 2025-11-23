@@ -34,13 +34,18 @@ class BucketManager:
                 bidx, eidx = self.find_or_create_bucket_for(p)
                 self.param_to_bucket[p] = (bidx, eidx)
                 # register the hook
+             #   print(f"bidx: {bidx}, eidx: {eidx}")
                 p.register_hook(self._make_hook(p, bidx, eidx))
 
     def _make_hook(self, param, bucket_idx, entry_idx):
         # called during backward with grad (tensor)
         def hook(grad):
             bucket = self.buckets[bucket_idx]
+            #print(f"Bucket {bucket_idx} offset before adding param grad: {bucket.offset}")
             # compute flat view into bucket.buffer
+            # print("len buckets:", len(bucket.entries))
+            # print("entry_idx:", entry_idx)
+            # print(bucket.entries[entry_idx])
             _, start, numel, shape, dtype = bucket.entries[entry_idx]
             # flatten grad to contiguous
             if not grad.is_contiguous():
