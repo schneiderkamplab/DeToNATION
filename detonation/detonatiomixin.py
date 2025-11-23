@@ -44,6 +44,7 @@ class DeToNATIONMixin():
         self.replicate_everys = replicate_every if isinstance(replicate_every, list) else [replicate_every]*len(self.replicators)
         self.skip_everys = [None]*len(self.replicators) if skip_every is None else (skip_every if isinstance(skip_every, list) else [skip_every])
         self.hooks = hooks
+        self.comm_stream = torch.cuda.Stream(device=torch.device("cuda"))
 
         self._sharding_world_size = dist.get_world_size(self.sharding_parallel_group)
         if self._sharding_world_size == 0:
@@ -60,7 +61,7 @@ class DeToNATIONMixin():
             # Any step-wise initialization needed by the replicator
             for replicator in self.replicators:
                 replicator.pre_step()
-
+            
             # Sharding gradient if needed
             unsharded_grad = grad.data
             param.grad = None
@@ -81,6 +82,7 @@ class DeToNATIONMixin():
 
         # Prepare and scatter the sharded gradient
         sharded_grad = torch.empty_like(chunks[0])
+
         dist.reduce_scatter_tensor(
             sharded_grad,
             padded_unsharded_grad,
