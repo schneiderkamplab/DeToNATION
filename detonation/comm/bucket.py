@@ -32,7 +32,7 @@ class Bucket:
 
     def reset_for_next(self):
         self.offset = 0
-        self.entries.clear()
+        # self.entries.clear()
         self.locked = False
         self.work = None
 
