@@ -131,17 +131,14 @@ def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compr
         tokenizer = AutoTokenizer.from_pretrained("allenai/OLMo-2-0425-1B", trust_remote_code=True)
     else:
         # Fetch from local folder
-        tokenizer = AutoTokenizer.from_pretrained("/leonardo_work/EUHPC_A04_086/OLMo-0425-1B-local", local_files_only=True, trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained("../OLMo-0425-1B-local", local_files_only=True, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token  # OLMo doesn't use pad_token by default
     
-    # If model can be downloaded from Huggingface at runtime:
-    #   model = AutoModelForCausalLM.from_pretrained("allenai/OLMo-2-0425-1B", trust_remote_code=True)
-    # else load from local dir:
-    model = AutoModelForCausalLM.from_pretrained("/leonardo_work/EUHPC_A04_086/OLMo-0425-1B-reinit-local", local_files_only=True, trust_remote_code=True)
+    model = AutoModelForCausalLM.from_pretrained("../OLMo-0425-1B-reinit-local", local_files_only=True, trust_remote_code=True)
 
     # Load Dolma dataset
-    datadir = "/leonardo_work/EUHPC_A04_086/datasets/allenai/dolma" 
+    datadir = "../datasets/allenai/dolma" 
     stream_dataset = load_dataset('json', data_files=f"{datadir}/{'v1_5r2_sample-*.json.gz'}", streaming=True, trust_remote_code=True)['train']
 
     tokenized_train_dataset = TokenizedStreamingDataset(dataset=stream_dataset, tokenizer=tokenizer, max_length=max_length)
