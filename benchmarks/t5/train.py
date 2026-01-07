@@ -30,7 +30,7 @@ from transformers.models.t5.modeling_t5 import T5Block
 @click.option('--compression-rate', default=0.0625)
 @click.option('--compression-topk', default=4)
 @click.option('--compression-chunk', default=64)
-@click.option('--model', default='google-t5/t5-base', type=click.Choice(['google-t5/t5-small', 'google-t5/t5-base', 'google-t5/t5-large']))
+@click.option('--model', default='google-t5/t5-small', type=click.Choice(['google-t5/t5-small', 'google-t5/t5-base', 'google-t5/t5-large']))
 @click.option('--replicate-every', default=1)
 @click.option('--skip-every', default=None, type=int)
 @click.option('--device', type=click.Choice(['cpu', 'cuda', 'mps']), default='cuda')
@@ -41,7 +41,10 @@ from transformers.models.t5.modeling_t5 import T5Block
 @click.option('--sign', default=True, type=bool, help="Use sign of gradients or full values.")
 @click.option('--description', default='', type=click.STRING, help='String comment for aim.')
 @click.option('--cluster', default='', type=click.STRING, help='Specify compute resource for aim logging')
-def main(batch_size, epochs, replicator, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards, rand_seed, dataset, debug, sign, description, cluster):
+@click.option('--lr', default=1e-3)
+@click.option('--accum', default=1, type=int, help='Number of gradient accumulation steps (default: 1)')
+@click.option('--avg', default=False)
+def main(batch_size, epochs, replicator, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, shards, rand_seed, dataset, debug, sign, description, cluster, lr, accum, avg):
     if optimizer == 'deto-slice':
         raise Exception("The slicing replicator does not currently work.")
     rank, nnodes, gpu_per_node = int(os.environ['RANK']), int(os.environ['NNODES']), torch.cuda.device_count()
@@ -57,8 +60,8 @@ def main(batch_size, epochs, replicator, optimizer, compression_rate, compressio
     if rank == 0:
         print('Aim hash: ', aimrun.get_runs()[0].hash)
     single = device in ('cpu', 'mps') or (device == 'cuda' and nnodes == gpu_per_node == 1)
-    model_and_co = setup(batch_size, replicator, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, dataset, debug, sign)
-    train(epochs, replicator, single, *model_and_co)
+    model_and_co = setup(batch_size, replicator, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, dataset, debug, sign, lr)
+    train(epochs, replicator, single, accum, *model_and_co)
 
 def seed(seed: int):
     random.seed(seed)
@@ -69,7 +72,7 @@ def seed(seed: int):
     elif torch.mps.is_available():
         torch.mps.manual_seed()
 
-def train(epochs, repl, single, model, train_loader, val_loader, optimizer, scheduler, train_sampler):
+def train(epochs, repl, single, accum, model, train_loader, val_loader, optimizer, scheduler, train_sampler):
     rank = int(os.environ['RANK'])
     for epoch in range(1, epochs+1):
         # train
@@ -77,20 +80,22 @@ def train(epochs, repl, single, model, train_loader, val_loader, optimizer, sche
         train_sampler.set_epoch(epoch)
         loss_samples = torch.zeros(2).to(model.device)
         metrics = {}
-        for batch in tqdm(train_loader, desc=f"Training epoch {epoch}", disable=rank>0, colour="blue", ncols=150):
+        for i, batch in enumerate(tqdm(train_loader, desc=f"Training epoch {epoch}", disable=rank>0, colour="blue", ncols=150)):
             if single:
                 batch["source_ids"] = batch["source_ids"].to(model.device)
                 batch["source_mask"] = batch["source_mask"].to(model.device)
                 batch["target_ids"] = batch["target_ids"].to(model.device)
-            optimizer.zero_grad()
             if repl == single: # 'adamw'
                 loss = model(input_ids=batch["source_ids"],attention_mask=batch["source_mask"],labels=batch["target_ids"] )["loss"]
                 loss.backward()
             else:
                 with model.no_sync(): # Disable gradient replication for the backward pass
                     loss = model(input_ids=batch["source_ids"],attention_mask=batch["source_mask"],labels=batch["target_ids"] )["loss"]
+                    loss = loss / accum
                     loss.backward()
-            optimizer.step()
+            if (i+1) % accum == 0:             
+                optimizer.step()                          
+                optimizer.zero_grad()
             loss_samples[0] += loss.item()
             loss_samples[1] += len(batch)
             metrics.update({'train/loss': loss.item()})
@@ -135,20 +140,20 @@ def train(epochs, repl, single, model, train_loader, val_loader, optimizer, sche
     dist.destroy_process_group()
     aimrun.close()
 
-def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, dataset, debug, detonation_sign):
+def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compression_chunk, model, replicate_every, skip_every, device, single, shards, rand_seed, dataset, debug, detonation_sign, lr):
     if rand_seed is not None:
         seed(rand_seed)
 
     # prepare model
-    tokenizer =  T5Tokenizer.from_pretrained(model, legacy=False)
-    model = T5ForConditionalGeneration(T5Config.from_pretrained(model))
+    tokenizer =  T5Tokenizer.from_pretrained("../DeToNATION/benchmarks/t5/t5-large-local/", legacy=False)
+    model = T5ForConditionalGeneration(T5Config.from_pretrained("../DeToNATION/benchmarks/t5/t5-large-local/"))
     # prepare dataset
     if dataset == 'WikiHow':
         train_test_split = load_dataset("gursi26/wikihow-cleaned", split="train").train_test_split(test_size=0.2)
         train_dataset = WikiHow(tokenizer, debug, train_test_split['train'], num_debug_samples=15000)
         val_dataset = WikiHow(tokenizer, debug, train_test_split['test'], num_debug_samples=3000)
     else:
-        train_test_split = load_dataset("Helsinki-NLP/opus_books", "en-fr", split="train").train_test_split(test_size=0.2)
+        train_test_split = load_dataset("Helsinki-NLP/opus_books", "en-fr", split="train").train_test_split(test_size=0.2) # Fetch from Huggingface
         train_dataset = OpusBooks(tokenizer, debug, train_test_split['train'], num_debug_samples=15000)
         val_dataset = OpusBooks(tokenizer, debug, train_test_split['test'], num_debug_samples=3000)
     train_sampler = DistributedSampler(train_dataset, shuffle=True)
@@ -161,7 +166,7 @@ def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compr
     mixed_precision = MixedPrecision(param_dtype=torch.bfloat16, reduce_dtype=torch.bfloat16, buffer_dtype=torch.bfloat16) if torch.cuda.is_bf16_supported() else None
     if single:
         model = model.to(device)
-        optimizer = AdamW(model.parameters(), lr=1e-3, weight_decay=0.)
+        optimizer = AdamW(model.parameters(), lr=lr, weight_decay=0.)
     elif repl.startswith('deto-'):
         if repl == 'deto-demo':
             replicator = DeMoReplicator(compression_topk=compression_topk, compression_chunk=compression_chunk)
@@ -176,10 +181,10 @@ def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compr
         else:
             replicator = NoReplicator()
         opt_enum = Optimizers(optimizer.lower())
-        model, optimizer = prepare_detonation(model, opt_enum, replicator, fsdp_kwargs={"auto_wrap_policy": auto_wrap_policy, "mixed_precision": mixed_precision}, replicate_every=replicate_every, skip_every=skip_every, sharding_group_size=shards, detonation_sign=detonation_sign)
+        model, optimizer = prepare_detonation(model, opt_enum, replicator, fsdp_kwargs={"auto_wrap_policy": auto_wrap_policy, "mixed_precision": mixed_precision}, replicate_every=replicate_every, skip_every=skip_every, sharding_group_size=shards, detonation_sign=detonation_sign, lr=lr)
     else:
         model = FSDP(model, auto_wrap_policy=auto_wrap_policy, mixed_precision=mixed_precision, device_id=int(os.environ['LOCAL_RANK']), sharding_strategy=ShardingStrategy.HYBRID_SHARD)
-        optimizer = AdamW(model.parameters(), lr=1e-3, weight_decay=0.)
+        optimizer = AdamW(model.parameters(), lr=lr, weight_decay=0.)
     optim = optimizer._optimizer if hasattr(optimizer, "_optimizer") else optimizer
     scheduler = StepLR(optim, step_size=1, gamma=0.85)
     return model, train_loader, val_loader, optimizer, scheduler, train_sampler
