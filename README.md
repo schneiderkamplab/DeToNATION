@@ -12,8 +12,6 @@
 [![PyPI](https://img.shields.io/pypi/v/detonation.svg)](https://pypi.org/project/detonation/)
 </div>
 
-## **📖 Abstract**
-
 **DeToNATION** is a communication framework designed to optimize distributed AI training. This repository contains an implementation of the results described in the paper **"DeToNATION: Decoupled Torch Network-Aware Training on Interlinked Online Nodes"**, accepted at **AAAI 2026**. An implementation to run all experiments from the paper is found in the benchmarks folder.
 
 The framework addresses latency bottlenecks in heterogeneous clusters by decoupling communication from computation, allowing for significantly faster convergence on low-bandwidth networks.
