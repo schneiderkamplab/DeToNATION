@@ -1,0 +1,30 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata from this file."
+title: "DeToNATION"
+authors:
+  - family-names: "From"
+    given-names: "Mogens Henrik"
+  - family-names: "Nielsen"
+    given-names: "Jacob"
+  - family-names: "Poech"
+    given-names: "Lukas Galke"
+  - family-names: "Schneider-Kamp"
+    given-names: "Peter"
+repository-code: "https://github.com/schneiderkamplab/DeToNATION"
+url: "https://arxiv.org/abs/2502.06728"
+preferred-citation:
+  type: conference-paper
+  title: "DeToNATION: Decoupled Torch Network-Aware Training on Interlinked Online Nodes"
+  authors:
+  - family-names: "From"
+    given-names: "Mogens Henrik"
+  - family-names: "Nielsen"
+    given-names: "Jacob"
+  - family-names: "Poech"
+    given-names: "Lukas Galke"
+  - family-names: "Schneider-Kamp"
+    given-names: "Peter"
+  collection-title: "Proceedings of the 40th Annual AAAI Conference on Artificial Intelligence (AAAI 2026)"
+  year: 2026
+  conference:
+    name: "AAAI Conference on Artificial Intelligence"
