@@ -2,9 +2,10 @@ import torch
 from .bucket import Bucket
 
 class BucketManager:
-    def __init__(self, bucket_size_bytes=32 * 1024 * 1024, device=None):
+    def __init__(self, bucket_size_bytes=32 * 1024 * 1024, device=None, process_group=None):
         self.bucket_size_bytes = bucket_size_bytes
         self.device = device or torch.device('cuda')
+        self.process_group = process_group  # for intra-node reduction
         self.buckets = []  # list of Bucket objects
         # map param -> (bucket_idx, entry_idx)
         self.param_to_bucket = {}
@@ -14,7 +15,7 @@ class BucketManager:
 
     def _make_buckets(self):
         # create an initial bucket (we'll grow on demand)
-        self.buckets = [Bucket(self.bucket_size_bytes, device=self.device)]
+        self.buckets = [Bucket(self.bucket_size_bytes, device=self.device, process_group=self.process_group)]
 
     def find_or_create_bucket_for(self, param):
         for i, b in enumerate(self.buckets):
@@ -22,7 +23,7 @@ class BucketManager:
                 # record param mapping: bucket index and its entry position (entry == last index)
                 return i, len(b.entries) - 1
         # if we reached, need a new bucket
-        newb = Bucket(self.bucket_size_bytes, device=self.device)
+        newb = Bucket(self.bucket_size_bytes, device=self.device, process_group=self.process_group)
         idx = len(self.buckets)
         self.buckets.append(newb)
         ok = newb.add_entry(param)

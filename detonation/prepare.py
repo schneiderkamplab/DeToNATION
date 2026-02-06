@@ -76,4 +76,4 @@ def prepare_detonation(
         case _:
             raise Exception("Optimizer not supported.")
 
-    return model, optim
+    return model, optim, sharding_parallel_group

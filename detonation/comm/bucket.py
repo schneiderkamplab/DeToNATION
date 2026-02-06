@@ -3,11 +3,12 @@ import torch.distributed as dist
 from collections import defaultdict
 
 class Bucket:
-    def __init__(self, size_bytes, device):
+    def __init__(self, size_bytes, device, process_group=None):
         # allocate large float tensor as buffer (size in bytes -> elements)
         # we allocate as float32; adapt dtype if needed
         self.device = device
         self.dtype = torch.float32
+        self.process_group = process_group  # None means global, or pass sharding group
         elem_size = torch.finfo(self.dtype).bits // 8
         n_elems = (size_bytes + elem_size - 1) // elem_size
         self.buffer = torch.empty(n_elems, dtype=self.dtype, device=device, requires_grad=False)
@@ -46,10 +47,15 @@ class Bucket:
         default_stream = torch.cuda.current_stream(self.device)
         # ensure copies to buffer (issued on default stream) are visible
         self.comm_stream.wait_stream(default_stream)
-        # run allreduce on comm_stream
+        # run allreduce on comm_stream with specified process group
         with torch.cuda.stream(self.comm_stream):
-            # NOTE: pass the tensor directly; async_op=True returns a Work handle
-            self.work = dist.all_reduce(self.buffer[:self.offset], op=dist.ReduceOp.SUM, async_op=True)
+            # Use the process_group for intra-node reduction if specified
+            self.work = dist.all_reduce(
+                self.buffer[:self.offset], 
+                op=dist.ReduceOp.AVG,  # Use AVG for proper gradient averaging
+                group=self.process_group,
+                async_op=True
+            )
         return self.work
 
     def wait(self):

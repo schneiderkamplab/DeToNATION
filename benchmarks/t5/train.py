@@ -209,13 +209,13 @@ def setup(batch_size, repl, optimizer, compression_rate, compression_topk, compr
         else:
             replicator = NoReplicator()
         opt_enum = Optimizers(optimizer.lower())
-        model, optimizer = prepare_detonation(model, opt_enum, replicator, fsdp_kwargs={"auto_wrap_policy": auto_wrap_policy, "mixed_precision": mixed_precision}, replicate_every=replicate_every, skip_every=skip_every, sharding_group_size=shards, detonation_sign=detonation_sign, lr=lr)
+        model, optimizer, sharding_parallel_group = prepare_detonation(model, opt_enum, replicator, fsdp_kwargs={"auto_wrap_policy": auto_wrap_policy, "mixed_precision": mixed_precision}, replicate_every=replicate_every, skip_every=skip_every, sharding_group_size=shards, detonation_sign=detonation_sign, lr=lr)
     else:
         model = FSDP(model, auto_wrap_policy=auto_wrap_policy, mixed_precision=mixed_precision, device_id=int(os.environ['LOCAL_RANK']), sharding_strategy=ShardingStrategy.HYBRID_SHARD)
         optimizer = AdamW(model.parameters(), lr=lr, weight_decay=0.)
     optim = optimizer._optimizer if hasattr(optimizer, "_optimizer") else optimizer
     if hooks and not single:
-        manager = BucketManager(bucket_size_bytes=32*2024*1024, device=torch.device('cuda'))
+        manager = BucketManager(bucket_size_bytes=32*2024*1024, device=torch.device('cuda'), process_group=sharding_parallel_group)
         manager.register_param_hooks(model)
         # for group in optimizer.param_groups:
         #     for param in group["params"]:
