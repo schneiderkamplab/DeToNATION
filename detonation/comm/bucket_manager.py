@@ -8,6 +8,8 @@ class BucketManager:
         self.buckets = []  # list of Bucket objects
         # map param -> (bucket_idx, entry_idx)
         self.param_to_bucket = {}
+        # map param -> actual gradient size/shape (determined during first backward)
+        self.param_grad_info = {}
         self._make_buckets()
 
     def _make_buckets(self):
@@ -28,36 +30,60 @@ class BucketManager:
         return idx, len(newb.entries) - 1
 
     def register_param_hooks(self, model, optimizer=None):
-        # walk params and place them into buckets and register hooks
+        # walk params and register hooks - defer bucket allocation until first backward
         for p in model.parameters():
             if p.requires_grad:
-                bidx, eidx = self.find_or_create_bucket_for(p)
-                self.param_to_bucket[p] = (bidx, eidx)
-                # register the hook
-             #   print(f"bidx: {bidx}, eidx: {eidx}")
-                p.register_hook(self._make_hook(p, bidx, eidx))
+                # Don't allocate buckets yet - do it dynamically on first gradient
+                p.register_hook(self._make_hook(p))
 
-    def _make_hook(self, param, bucket_idx, entry_idx):
+    def _make_hook(self, param):
         # called during backward with grad (tensor)
         def hook(grad):
+            # First time seeing this gradient - allocate bucket space
+            if param not in self.param_to_bucket:
+                grad_shape = grad.shape
+                grad_numel = grad.numel()
+                grad_dtype = grad.dtype
+                
+                # Store gradient info
+                self.param_grad_info[param] = (grad_shape, grad_numel, grad_dtype)
+                
+                # Create a dummy param-like object with the correct size for bucket allocation
+                class GradWrapper:
+                    def __init__(self, shape, dtype, device):
+                        self.shape = shape
+                        self.dtype = dtype
+                        self.device = device
+                    def numel(self):
+                        return grad_numel
+                
+                grad_wrapper = GradWrapper(grad_shape, grad_dtype, grad.device)
+                bidx, eidx = self.find_or_create_bucket_for(grad_wrapper)
+                self.param_to_bucket[param] = (bidx, eidx)
+            
+            bucket_idx, entry_idx = self.param_to_bucket[param]
             bucket = self.buckets[bucket_idx]
-            #print(f"Bucket {bucket_idx} offset before adding param grad: {bucket.offset}")
-            # compute flat view into bucket.buffer
-            # print("len buckets:", len(bucket.entries))
-            # print("entry_idx:", entry_idx)
-            # print(bucket.entries[entry_idx])
+            
             _, start, numel, shape, dtype = bucket.entries[entry_idx]
+            
             # flatten grad to contiguous
             if not grad.is_contiguous():
                 grad = grad.contiguous()
+            
+            grad_flat = grad.view(-1)
+            actual_numel = grad_flat.numel()
+            
+            # Sanity check - should match now
+            if actual_numel != numel:
+                raise RuntimeError(f"Gradient size mismatch: expected {numel}, got {actual_numel}")
+            
             # copy tensor into bucket buffer (cast if needed)
-            # use view to flatten param area
             dest = bucket.buffer[start:start+numel]
-            # copy on GPU, casting to float32 if necessary
+            
             if grad.dtype != bucket.dtype:
-                dest.copy_(grad.view(-1).to(bucket.dtype))
+                dest.copy_(grad_flat.to(bucket.dtype))
             else:
-                dest.copy_(grad.view(-1))
+                dest.copy_(grad_flat)
             # optionally clear the original grad to save memory (we'll restore later)
             # return None -> do not replace grad (we're doing out-of-band)
             # Trigger launch when bucket is full (or you can implement timer/finish logic)
@@ -77,7 +103,19 @@ class BucketManager:
             b.wait()
         # write reduced values back into param.grad (and cast back)
         for b in self.buckets:
-            for (param, start, numel, shape, dtype) in b.entries:
+            for (param_or_wrapper, start, numel, shape, dtype) in b.entries:
+                # Find the actual parameter (param_or_wrapper might be GradWrapper)
+                actual_param = None
+                for p, (bidx, eidx) in self.param_to_bucket.items():
+                    if bidx < len(self.buckets) and eidx < len(self.buckets[bidx].entries):
+                        entry_param = self.buckets[bidx].entries[eidx][0]
+                        if entry_param is param_or_wrapper:
+                            actual_param = p
+                            break
+                
+                if actual_param is None:
+                    continue
+                
                 out_flat = b.buffer[start:start+numel]
                 # convert back to param dtype and view to original shape
                 if dtype != b.dtype:
@@ -85,9 +123,9 @@ class BucketManager:
                 else:
                     val = out_flat.view(shape)
                 # store reduced grad into param.grad (overwrite)
-                if param.grad is None:
-                    param.grad = val.clone()  # ensure grad is a separate tensor that autograd expects
+                if actual_param.grad is None:
+                    actual_param.grad = val.clone()  # ensure grad is a separate tensor that autograd expects
                 else:
-                    param.grad.copy_(val)
+                    actual_param.grad.copy_(val)
             # after copying back, reset bucket for next iteration
             b.reset_for_next()
